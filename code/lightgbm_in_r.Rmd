@@ -1,0 +1,411 @@
+---
+
+title: "Untitled"
+output: html_document
+---
+
+
+```{r}
+library(data.table)
+library(xgboost)
+library(lightgbm)
+library(caret)
+library(lubridate)
+library(dplyr)
+
+# Nos quedamos solo con las primeras 80000000 lineas de train.csv para no agotar la memoria
+# Descartamos las columnas "ip" (1), "click time" (6) y "attributed time" (7)
+trainData<-fread('/home/rjs/바탕화면/adtrack/data/train.csv',drop = c(7))
+trainData$click_time<- ymd_hms(trainData$click_time)
+trainData$click_time <- trainData$click_time + dhours(8)
+trainData$hour <- hour(trainData$click_time)
+trainData$day <- day(trainData$click_time)
+
+testsupData <- fread('/home/rjs/바탕화면/adtrack/data/test_supplement.csv')
+testsupData <- testsupData %>% select(-click_id)
+testsupData <- testsupData[!duplicated(testsupData),]
+testsupData$is_attributed <- 0
+testsupData$click_time<-ymd_hms(testsupData$click_time)
+testsupData$click_time <- testsupData$click_time + dhours(8)
+testsupData$hour <- hour(testsupData$click_time)
+testsupData$day <- day(testsupData$click_time)
+
+
+# Descartamos las columnas "ip" (2) y "click time" (7)
+testData<-fread('/home/rjs/바탕화면/adtrack/data/test.csv')
+testData$click_time<-ymd_hms(testData$click_time)
+testData$click_time <- testData$click_time + dhours(8)
+
+endOfTrainData<-dim(trainData)[1]
+
+totalData <- rbind(trainData, testsupData)
+
+# https://www.kaggle.com/c/talkingdata-adtracking-fraud-detection/discussion/56065
+
+totalData[, UsrappCount:=.N,   by=list(ip, app, device, os)]
+totalData[, UsrappRank:=1:.N,  by=list(ip, app, device, os)]
+totalData[, UsrCount:=.N,      by=list(ip, os, device)]
+totalData[, UsrRank:=1:.N,     by=list(ip, os, device)]
+totalData[, nipApp:=.N,        by=list(ip, day, hour, app)]
+totalData[, nipAppOs:=.N,      by=list(ip, day, hour, app, os)]
+totalData[, napp:=.N,          by=list(app, day, hour)]
+totalData[, nappDev:=.N,       by=list(app, day, device)]
+totalData[, nappDevOs:=.N,     by=list(app, day, device, os)]
+
+totalData[, click_time_num := as.numeric(click_time)]
+
+totalData[, by_ipappdeviceoschannel_nextclick1 := c(click_time_num[-1], NA), by = c("ip", "app", "device", "os", "channel")]
+totalData[, by_ipappdeviceoschannel_nextclick1 := by_ipappdeviceoschannel_nextclick1 - click_time_num]
+totalData[is.na(by_ipappdeviceoschannel_nextclick1), by_ipappdeviceoschannel_nextclick1 := 0]
+
+totalData[, by_iposdevice_nextclick1 := c(click_time_num[-1], NA), by = c("ip", "os", "device")]
+totalData[, by_iposdevice_nextclick1 := by_iposdevice_nextclick1 - click_time_num]
+totalData[is.na(by_iposdevice_nextclick1), by_iposdevice_nextclick1 := 0]
+
+totalData[, by_iposdeviceapp_nextclick1 := c(click_time_num[-1], NA), by = c("ip", "os", "device", "app")]
+totalData[, by_iposdeviceapp_nextclick1 := by_iposdeviceapp_nextclick1 - click_time_num]
+totalData[is.na(by_iposdeviceapp_nextclick1), by_iposdeviceapp_nextclick1 := 0]
+
+totalData[, by_ipchannel_prevclick1 := c(NA, click_time_num[-.N]), by = c("ip", "channel")]
+totalData[, by_ipchannel_prevclick1 := click_time_num - by_ipchannel_prevclick1]
+totalData[is.na(by_ipchannel_prevclick1), by_ipchannel_prevclick1 := 0]
+
+totalData[, by_ipos_prevclick1 := c(NA, click_time_num[-.N]), by = c("ip", "os")]
+totalData[, by_ipos_prevclick1 := click_time_num - by_ipos_prevclick1]
+totalData[is.na(by_ipos_prevclick1), by_ipos_prevclick1 := 0]
+
+trainData <- totalData[1:endOfTrainData,]
+testsupData <- totalData[(endOfTrainData+1):nrow(totalData),]
+
+rm(totalData)
+gc()
+
+testData <- testData %>% left_join(testsupData, by = setdiff(colnames(testData),"click_id"))
+rm(testsupData)
+gc()
+
+validData <- trainData[trainData$day==9 & trainData$hour %in% c(12,13,17,18,21,22),]
+trainData <- trainData[trainData$day %in% c(7,8),]
+
+# Balanceamos clases
+# trainDataDwnSmpl<-downSample(trainData %>% select(-is_attributed),as.factor(trainData$is_attributed))
+# trainDataDwnSmpl$is_attributed <- trainDataDwnSmpl$Class
+# trainDataDwnSmpl$Class <- NULL
+trainDataDwnSmpl <- trainData
+
+# Como mas abajo hacemos rbind de trainDataDwnSmpl y z vamos a almacenar
+# donde terminan los datos de trainig
+trainDataDwnSmpl$ip <- NULL
+trainDataDwnSmpl$click_time <- NULL
+trainDataDwnSmpl$click_time_num <- NULL
+trainDataDwnSmpl$day <- NULL
+
+validData$ip <- NULL
+validData$click_time <- NULL
+validData$click_time_num <- NULL
+validData$day <- NULL
+
+testData$ip <- NULL
+testData$click_time <- NULL
+testData$click_time_num <- NULL
+testData$day <- NULL
+
+categorical_features = c("app", "device", "os", "channel", "hour")
+
+#######################################################
+
+cat("Creating the 'dtrain' for modeling...")
+dtrain = lgb.Dataset(data = as.matrix(trainDataDwnSmpl[,-5]), 
+                     label = trainDataDwnSmpl$is_attributed, categorical_feature = categorical_features)
+
+#######################################################
+
+cat("Creating the 'dvalid' for modeling...")
+dvalid = lgb.Dataset(data = as.matrix(validData[,-5]), 
+                     label = validData$is_attributed, categorical_feature = categorical_features)
+gc()
+```
+```{r}
+print("Modelling")
+
+params = list(objective = "binary", 
+              metric = "auc", 
+              learning_rate= 0.1,
+              num_leaves= 7,
+              max_depth= 4,
+              min_child_samples= 100,
+              max_bin= 100,
+              subsample= 0.7, 
+              subsample_freq= 1,
+              colsample_bytree= 0.7,
+              min_child_weight= 0,
+              min_split_gain= 0,
+              scale_pos_weight= 99.7
+              )
+#######################################################
+model <- lgb.train(params, dtrain, valids = list(validation = dvalid), nthread = 12,
+                   nrounds = 1500, verbose= 1, early_stopping_rounds = 30, eval_freq = 1)
+
+invisible(gc())
+
+cat("Setting up the submission file... \n")
+sub <- data.table(click_id = testData$click_id, is_attributed = NA) 
+testData$click_id <- NULL
+invisible(gc())
+
+
+#*****************************************************************
+# Predictions
+
+#######################################################
+
+cat("Predictions: \n")
+preds <- predict(model, data = as.matrix(testData[, colnames(testData)], n = model$best_iter))
+
+#######################################################
+
+cat("Converting to data frame: \n")
+preds <- as.data.frame(preds)
+
+#######################################################
+
+cat("Creating the submission data: \n")
+sub$is_attributed = preds
+
+#######################################################
+
+cat("Removing test... \n")
+rm(test)
+invisible(gc())
+
+#######################################################
+
+cat("Rounding: \n")
+sub$is_attributed = round(sub$is_attributed, 9)
+
+#######################################################
+
+cat("Writing into a csv file: \n")
+fwrite(sub, "lgb_Usrnewness.csv")
+
+#######################################################
+cat("A quick peek at the submission data: \n") 
+head(sub, 10)
+
+#*****************************************************************
+# Feature importance
+cat("Feature importance: ")
+lgb.importance(model, percentage = TRUE)
+```
+
+```{r}
+# params = list(objective = "binary",
+#               metric = "auc",
+#               learning_rate= 0.2,
+#               num_leaves= 9,
+#               max_depth= 4,
+#               min_child_samples= 100,
+#               max_bin= 100,
+#               subsample= 0.7,
+#               subsample_freq= 1,
+#               colsample_bytree= 0.7,
+#               min_child_weight= 0,
+#               min_split_gain= 0
+#               #device = "gpu"
+#               #scale_pos_weight=99.76
+#               )
+# 
+# # Creamos el modelo
+# model <- lgb.train(params, trainDataDwnSmpl_lgb, valids = list(validation = validData_lgb), nthread = 12,
+#                    nrounds = 1000, verbose= 1, early_stopping_rounds = 50)
+# 
+# # Prediccion
+# res<-predict(model,allData_dummified[-(1:(endOfTrainData+endOfvalidData)),])
+# 
+# submit<-cbind.data.frame(click_id=testData$click_id,is_attributed=round(res,digits = 3))
+# write.csv(submit,paste0("/home/rjs/바탕화면/adtrack/result/lightgbm_in_r",Sys.Date(),".csv"),quote = F,row.names = F)
+
+```
+
+```{r}
+# endOfTrainData<-dim(trainDataDwnSmpl)[1]
+# endOftestData<-dim(testData)[1]
+# endOfvalidData<-dim(validData)[1]
+# 
+# 
+# # allData es para que no haya discrepancias en la variables binarias
+# # de train y test cuando hacemos one hot encode
+# allData<-rbind(trainDataDwnSmpl, validData, testData, fill = T)
+# allData <- allData %>% select(-click_time)
+# gc()
+# 
+# # one hot encode app
+# apps<-as.factor(allData$app)
+# apps_dummy<-Matrix::sparse.model.matrix(~0+apps)
+# 
+# # one hot encode devices
+# devices<-as.factor(allData$device)
+# devices_dummy<-Matrix::sparse.model.matrix(~0+devices)
+# 
+# # one hot encode oss
+# oss<-as.factor(allData$os)
+# oss_dummy<-Matrix::sparse.model.matrix(~0+oss)
+# 
+# # one hot encode channels
+# channels<-as.factor(allData$channel)
+# channels_dummy<-Matrix::sparse.model.matrix(~0+channels)
+# 
+# allData_dummified <- cbind(apps_dummy,devices_dummy,oss_dummy,channels_dummy)
+# 
+# trainDataDwnSmpl<-lgb.Dataset(data = allData_dummified[1:endOfTrainData,],label = as.integer(as.character(trainDataDwnSmpl$is_attributed)))
+# validData_lgb<-lgb.Dataset(data = allData_dummified[(endOfTrainData+1):(endOfTrainData+endOfvalidData),],label = as.integer(as.character(validData$is_attributed)))
+
+```
+
+
+```{r}
+## xgboost
+# # Recuperamos el conjunto de training
+# trainDataDwnSmpl<-xgb.DMatrix(data = allData_dummified[1:endOfTrainData,],label = as.integer(as.character(trainDataDwnSmpl$Class)))
+# 
+# # Creamos el modelo
+# model <- xgboost(trainDataDwnSmpl, nrounds = 500, objective = "binary:logistic",eval_metric="auc")
+# 
+# # Prediccion
+# res<-predict(model,allData_dummified[-(1:endOfTrainData),])
+# 
+# submit<-cbind.data.frame(click_id=testData$click_id,is_attributed=round(res,digits = 3))
+# write.csv(submit,"/home/rjs/바탕화면/adtrack/result/submit_04_abr_2.csv",quote = F,row.names = F)
+```
+
+```{r}
+
+# grid_search <- expand.grid(
+#   num_leaves        = c(5,7,9,255),
+#   max_depth         = c(4,6,8,48,64),
+#   subsample         = c(0.7,0.9,1),
+#   colsample_bytree  = c(0.7,0.9,1),
+#   min_child_weight  = c(0,0.01,0.1),
+#   scale_pos_weight  = c(100,200,300,400)
+# )
+# 
+# 
+# model <- list()
+# perf <- numeric(nrow(grid_search))
+# 
+# for (i in 1:nrow(grid_search)) {
+#   cat("Model ***", i , "*** of ", nrow(grid_search), "\n")
+#   model[[i]] <- lgb.train(
+#   	  list(objective         = "binary",
+# 	       metric            = "auc",
+# 	       learning_rate     = 0.1,
+# 	       min_child_samples = 100,
+# 	       max_bin           = 100,
+# 	       subsample_freq    = 1,
+# 	       num_leaves        = grid_search[i, "num_leaves"],
+# 	       max_depth         = grid_search[i, "max_depth"],
+# 	       subsample         = grid_search[i, "subsample"],
+# 	       colsample_bytree  = grid_search[i, "colsample_bytree"],
+# 	       min_child_weight  = grid_search[i, "min_child_weight"],
+# 	       scale_pos_weight  = grid_search[i, "scale_pos_weight"]),
+# 	  trainDataDwnSmpl,
+# 	  valids = list(validation = validData_lgb),
+# 	  nthread = 12, 
+# 	  nrounds = 1000, # increase/ decrease rounds
+# 	  verbose= 1, 
+# 	  early_stopping_rounds = 50
+# 	)
+#   perf[i] <- max(unlist(model[[i]]$record_evals[["validation"]][["auc"]][["eval"]]))
+#   invisible(gc()) # free up memory after each model run
+# }
+# 
+# cat("
+# -----------------------------------------------------------------------------------
+#                Step 4: Print grid search result of best params
+# -----------------------------------------------------------------------------------
+# ")
+# 
+# # grid_search result
+# cat("Model ", which.max(perf), " is max AUC: ", max(perf), sep = "","\n")
+# best_params = grid_search[which.max(perf), ]
+# fwrite(best_params,"best_params_for_sample_data.txt")
+# 
+# cat("Best params within chosen grid search: ", "\n")
+# t(best_params)
+# 
+# cat("
+# -----------------------------------------------------------------------------------
+#                 Guide on which params to tune/ NOT to tune
+#         source: https://github.com/Microsoft/LightGBM/issues/695
+# -----------------------------------------------------------------------------------
+# 
+# For heavily unbalanced datasets such as 1:10000:
+# 
+# - max_bin: keep it only for memory pressure, not to tune (otherwise overfitting)
+# - learning rate: keep it only for training speed, not to tune (otherwise overfitting)
+# - n_estimators: must be infinite and use early stopping to auto-tune (otherwise overfitting)
+# - num_leaves: [7, 4095]
+# - max_depth: [2, 63] and infinite 
+# - scale_pos_weight: [1, 10000] 
+# - min_child_weight: [0.01, (sample size / 1000)] 
+# - subsample: [0.4, 1]
+# - bagging_fraction: only 1, keep as is (otherwise overfitting)
+# - colsample_bytree: [0.4, 1]
+# 
+# Never tune following parameters unless you have an explicit requirement to tune them:
+# 
+# - Learning rate (lower means longer to train but more accurate, higher means smaller to train but less accurate)
+# - Number of boosting iterations (automatically tuned with early stopping and learning rate)
+# - Maximum number of bins (RAM dependent)
+# ")
+```
+
+```{r}
+# sub <- data.table(click_id = sub$click_id, is_attributed = NA) 
+# test$click_id <- NULL
+# 
+# test$ip_app_device_os_channel_nextClick <- ifelse(is.na(test$ip_app_device_os_channel_nextClick),
+#                                                   median(test$ip_app_device_os_channel_nextClick,na.rm=TRUE),
+#                                                   test$ip_app_device_os_channel_nextClick)
+# test$ip_os_device_nextClick <- ifelse(is.na(test$ip_os_device_nextClick),
+#                                                   median(test$ip_os_device_nextClick,na.rm=TRUE),
+#                                                   test$ip_os_device_nextClick)
+# test$ip_os_device_app_nextClick <- ifelse(is.na(test$ip_os_device_app_nextClick),
+#                                                   median(test$ip_os_device_app_nextClick,na.rm=TRUE),
+#                                                   test$ip_os_device_app_nextClick)
+# test$ip_channel_prevClick <- ifelse(is.na(test$ip_channel_prevClick),
+#                                                   median(test$ip_channel_prevClick,na.rm=TRUE),
+#                                                   test$ip_channel_prevClick)
+# test$ip_day_channel_by_hour_var <- ifelse(is.na(test$ip_day_channel_by_hour_var),
+#                                                   median(test$ip_day_channel_by_hour_var,na.rm=TRUE),
+#                                                   test$ip_day_channel_by_hour_var)
+# 
+# preds <- predict(model[[3]], data = as.matrix(test %>% select(-is_attributed,-is_attributed), n = model[[3]]$best_iter))
+# 
+# #######################################################
+# 
+# cat("Converting to data frame: \n")
+# preds <- as.data.frame(preds)
+# 
+# #######################################################
+# 
+# cat("Creating the submission data: \n")
+# sub$is_attributed = preds
+# 
+# #######################################################
+# 
+# cat("Removing test... \n")
+# rm(test)
+# invisible(gc())
+# 
+# #######################################################
+# 
+# cat("Rounding: \n")
+# sub$is_attributed = round(sub$is_attributed, 9)
+# 
+# #######################################################
+# 
+# cat("Writing into a csv file: \n")
+# fwrite(sub, "lgb_Usrnewness.csv")
+
+```

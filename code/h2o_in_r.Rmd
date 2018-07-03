@@ -1,0 +1,284 @@
+---
+  title: "TalkingData: R LightGBM Tutorial with Model Evaluation"
+author: "Pranav Pandya"
+output:
+  html_document:
+  number_sections: true
+code_folding: show
+toc: true
+toc_depth: 6
+fig_width: 10
+highlight: tango
+theme: cosmo
+smart: true
+editor_options: 
+  chunk_output_type: console
+---
+  
+  
+  ```{r libraries, message=FALSE}
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(knitr, tidyverse, highcharter, data.table, lubridate, janitor, pROC, tictoc, DescTools, lightgbm, h2o, caret)
+set.seed(84)               
+options(scipen = 9999, warn = -1, digits= 5)
+```
+
+
+## **Piping**
+
+### Chain together and pipe training data
+```{r piping train data, message=FALSE}
+tic("Total processing time for feature engineering on training data --->")
+
+most_freq_hrs_in_test_data <- c("4","5","9","10","13","14")
+least_freq_hrs_in_test_data <- c("6","11","15")
+
+train <- fread("../data/train_9.csv") %>% 
+  mutate(in_test_hh = ifelse(hr %in% most_freq_hrs_in_test_data, 1,
+                             ifelse(hr %in% least_freq_hrs_in_test_data, 2, 3))) %>%
+  select(-c(attributed_time)) %>%
+  select(-c(click_time)) %>%
+  add_count(ip, day, in_test_hh) %>% rename("nip_day_test_hh" = n) %>%
+  select(-c(in_test_hh)) %>%
+  add_count(ip) %>% rename("nip" = n) %>%
+  add_count(app) %>% rename("napp" = n) %>%
+  add_count(device) %>% rename("ndevice" = n) %>%
+  add_count(os) %>% rename("nos" = n) %>%
+  add_count(channel) %>% rename("nchannel" = n) %>%
+  add_count(ip, day, hr) %>% rename("nip_day_h" = n) %>%
+  add_count(ip, hr, channel) %>% rename("nip_h_chan" = n) %>%
+  add_count(ip, hr, os) %>% rename("nip_h_osr" = n) %>%
+  add_count(ip, hr, app) %>% rename("nip_h_app" = n) %>%
+  add_count(ip, hr, device) %>% rename("nip_h_dev" = n) %>%
+  add_count(app, channel) %>% rename("napp_channel" = n) %>%
+  add_count(ip, hr, app, channel) %>% rename("nip_h_app_channel" = n) %>%
+  select(-c(ip))
+
+invisible(gc())
+```
+
+### Chain together and pipe test data
+```{r piping test data, message=FALSE}
+tic("Total processing time for feature engineering on test data --->")
+test  <- fread("../data/test_10.csv") 
+
+# extract click_id for submission file
+sub <- data.table(click_id = test$click_id, is_attributed = NA) 
+test$click_id <- NULL
+
+test <- test %>%
+  mutate(in_test_hh = ifelse(hr %in% most_freq_hrs_in_test_data, 1,
+                             ifelse(hr %in% least_freq_hrs_in_test_data, 2, 3))) %>%
+  select(-c(attributed_time)) %>%
+  select(-c(click_time)) %>%
+  add_count(ip, day, in_test_hh) %>% rename("nip_day_test_hh" = n) %>%
+  select(-c(in_test_hh)) %>%
+  select(-c(click_time)) %>%
+  add_count(ip) %>% rename("nip" = n) %>%
+  add_count(app) %>% rename("napp" = n) %>%
+  add_count(device) %>% rename("ndevice" = n) %>%
+  add_count(os) %>% rename("nos" = n) %>%
+  add_count(channel) %>% rename("nchannel" = n) %>%
+  add_count(ip, day, hr) %>% rename("nip_day_h" = n) %>%
+  add_count(ip, hr, channel) %>% rename("nip_h_chan" = n) %>%
+  add_count(ip, hr, os) %>% rename("nip_h_osr" = n) %>%
+  add_count(ip, hr, app) %>% rename("nip_h_app" = n) %>%
+  add_count(ip, hr, device) %>% rename("nip_h_dev" = n) %>%
+  add_count(app, channel) %>% rename("napp_channel" = n) %>%
+  add_count(ip, hr, app, channel) %>% rename("nip_h_app_channel" = n) %>%
+  select(-c(ip))
+
+invisible(gc())
+```
+
+## factor변환
+```{r}
+train[, c("app","device","os","channel")] <- lapply(train[, c("app","device","os","channel")], as.factor)
+test[, c("app","device","os","channel")] <- lapply(test[, c("app","device","os","channel")], as.factor)
+```
+
+## path setting
+```{r}
+setwd("../data")
+```
+
+## downsampling
+```{r}
+train <- downSample(train %>% select(-is_attributed),as.factor(dtrain$is_attributed))
+train$is_attributed <- train$Class
+train <- train %>% select(-Class)
+```
+
+## Modeling
+```{r}
+predictors <- setdiff(names(train_Hex),
+                      c("is_attributed","attributed_time","click_time"))
+response <- "is_attributed"
+```
+
+## h2o
+```{r}
+h2o.init(nthreads = 10, max_mem_size = '64G')
+train_Hex<-as.h2o(train)
+test_Hex<-as.h2o(test)
+```
+
+## Modeling
+```{r}
+predictors <- setdiff(names(train_Hex),
+                      c("is_attributed","attributed_time","click_time"))
+response <- "is_attributed"
+```
+
+## gbm
+```{r}
+gbm_down <- h2o.gbm(x = predictors,
+                    y = response,
+                    training_frame = train_Hex,
+                    nfolds = 5,
+                    ntrees = 100, 
+                    sample_rate = 0.7, 
+                    col_sample_rate = 0.7,
+                    max_depth = 5, 
+                    min_rows = 1,
+                    seed=950902)
+
+pred_gbm <- h2o.predict(gbm_down,test_Hex)
+
+sub$gbm_down <- as.vector(pred_gbm$p1)
+
+temp <- sub %>% select(click_id,gbm_down)
+colnames(temp) <- c("click_id","is_attributed")
+write.csv(temp,"gbm_downsample_change_ip_remove_hr_4_15.csv",row.names=FALSE)
+
+gbm_down
+
+gbm_down@model$variable_importances[1:20,]
+```
+
+## dart
+```{r}
+dart_down <- h2o.xgboost(x = predictors,
+                         y = response,
+                         booster="dart",
+                         rate_drop = 0.1,
+                         training_frame = train_Hex,
+                         nfolds = 5,
+                         ntree=200,
+                         seed=950902)
+
+pred_dart <- h2o.predict(dart_down,test_Hex)
+
+sub$dart_down <- as.vector(pred_dart$p1)
+
+temp <- sub %>% select(click_id,dart_down)
+colnames(temp) <- c("click_id","is_attributed")
+write.csv(temp,"dart_downsample_change_ip_remove_hr_4_15.csv",row.names=FALSE)
+
+dart_down
+
+dart_down@model$variable_importances[1:20,]
+```
+
+
+## xgboost
+```{r}
+xgboost_down <- h2o.xgboost(x = predictors,
+                            y = response,
+                            training_frame = train_Hex,
+                            nfolds = 5,
+                            booster = "gbtree",
+                            learn_rate = 0.05,
+                            max_depth = 5,
+                            subsample = 0.7,
+                            col_sample_rate_per_tree = 0,
+                            min_child_weight = 1, 
+                            min_split_improvement = 0,
+                            reg_lambda = 0, 
+                            reg_alpha = 0,
+                            seed=950902)
+
+
+pred_xgboost <- h2o.predict(xgboost_down,test_Hex)
+
+sub$xgboost_down <- as.vector(pred_xgboost$p1)
+
+temp <- sub %>% select(click_id,xgboost_down)
+colnames(temp) <- c("click_id","is_attributed")
+write.csv(temp,"xgboost_downsample_change_ip_remove_hr_4_15.csv",row.names=FALSE)
+
+xgboost_down
+
+xgboost_down@model$variable_importances[1:20,]
+```
+
+## lightgbm
+```{r}
+lightgbm_down <- h2o.xgboost(x = predictors,
+                             y = response,
+                             training_frame = train_Hex,
+                             nfolds = 5,
+                             tree_method="hist",
+                             grow_policy="lossguide",
+                             y = response,
+                             training_frame = train_Hex,
+                             validation_frame = val_Hex,
+                             booster = "gbtree",
+                             learn_rate = 0.05,
+                             max_leaves = 255,
+                             max_depth = 5,
+                             max_bins = 100,
+                             subsample = 0.7,
+                             col_sample_rate_per_tree = 0,
+                             min_child_weight = 1, 
+                             min_split_improvement = 0,
+                             reg_lambda = 0, 
+                             reg_alpha = 0,
+                             seed=950902)
+
+pred_lightgbm <- h2o.predict(lightgbm_down,test_Hex)
+
+sub$lightgbm_down <- as.vector(pred_lightgbm$p1)
+
+temp <- sub %>% select(click_id,lightgbm_down)
+colnames(temp) <- c("click_id","is_attributed")
+write.csv(temp,"lightgbm_downsample_change_ip_remove_hr_4_15.csv",row.names=FALSE)
+
+lightgbm_down
+
+lightgbm_down@model$variable_importances[1:20,]
+```
+
+## rf
+```{r}
+rf_down <- h2o.randomForest(x = predictors,
+                            y = response,
+                            training_frame = train_Hex,
+                            nfolds = 5,
+                            col_sample_rate_change_per_level = 0.7, 
+                            col_sample_rate_per_tree = 0.7,
+                            ntree=100,
+                            seed=950902)
+
+
+pred_rf <- h2o.predict(rf_down,test_Hex)
+
+sub$rf_down <- as.vector(pred_rf$p1)
+
+
+temp <- sub %>% select(click_id,rf_down)
+colnames(temp) <- c("click_id","is_attributed")
+write.csv(temp,"rf_downsample_change_ip_remove_hr_4_15.csv",row.names=FALSE)
+
+rf_down
+
+rf_down@model$variable_importances[1:20,]
+```
+
+
+```{r}
+temp <- sub %>% select(click_id, gbm_down, rf_down, xgboost_down, lightgbm_down)
+temp$is_attributed <- temp %>% with((gbm_down + rf_down + xgboost_down + lightgbm_down)/4)
+temp <- temp %>% select(click_id, is_attributed)
+write.csv(temp,"total_downsample_change_ip_remove_hr_4_15.csv",row.names=FALSE)
+```

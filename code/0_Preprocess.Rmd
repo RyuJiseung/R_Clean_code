@@ -1,0 +1,154 @@
+
+---
+title: "0_Preprocess"
+output: html_document
+---
+
+
+```{r}
+# 패키지 로드
+library(needs)
+needs(knitr, tidyverse, data.table, lubridate, lightgbm, beepr, fst)
+```
+
+```{r}
+train <- fread("/home/rjs/바탕화면/adtrack/data/train.csv") 
+test <- fread("/home/rjs/바탕화면/adtrack/data/test.csv")  
+# test_sup <- fread("/home/rjs/바탕화면/adtrack/data/test_supplement.csv")  
+```
+
+```{r}
+train$click_time <- as.POSIXct(train$click_time)
+train$click_time <- train$click_time + dhours(8)
+test$click_time<-as.POSIXct(test$click_time)
+test$click_time <- test$click_time + dhours(8)
+# test_sup$click_time<-as.POSIXct(test_sup$click_time)
+# test_sup$click_time <- test_sup$click_time + dhours(8)
+
+train$day <- day(train$click_time)
+train$hour <- hour(train$click_time)
+test$day <- day(test$click_time)
+test$hour <- hour(test$click_time)
+# test_sup$day <- day(test_sup$click_time)
+# test_sup$hour <- hour(test_sup$click_time)
+
+train <- train %>% subset(!day %in% c(6,10))
+```
+
+```{r}
+valid <- train %>% subset(day==9)
+real_valid <- valid
+train <- train %>% subset(day==7 | day==8)
+```
+
+```{r}
+# hour(test$click_time) %>% table
+#      12      13      14      17      18      19      21      22      23 
+# 3344125 2858427     381 2984808 3127993     413 3212566 3261257     499 
+valid <- valid %>% subset(hour %in% c(12,13,17,18,21,22))
+beep(2)
+```
+
+```{r}
+# down sampling
+train_save <- train
+train_1 <- train %>% subset(is_attributed == 1)
+train_0 <- train %>% subset(is_attributed == 0)
+train <- train_0[sample(nrow(train_0),nrow(train_1)),]
+train <- train %>% bind_rows(train_1)
+rm(train_0,train_1)
+#train <- train_save
+```
+
+```{r}
+categorical_features = c("ip", "app", "device", "os", "channel", "hour")
+
+cat("Creating the 'dtrain' for modeling...")
+dtrain = lgb.Dataset(data = as.matrix(train %>% select(-is_attributed,-day,-click_time,-attributed_time)),
+                     label = train$is_attributed, categorical_feature = categorical_features)
+
+#######################################################
+
+cat("Creating the 'dvalid' for modeling...")
+dvalid = lgb.Dataset(data = as.matrix(valid %>% select(-is_attributed,-day,-click_time,-attributed_time)), 
+                     label = valid$is_attributed, categorical_feature = categorical_features)
+
+#####################
+```
+
+```{r}
+print("Modelling")
+
+params = list(objective = "binary", 
+              metric = "auc", 
+              learning_rate= 0.2,
+              num_leaves= 9,
+              max_depth= 4,
+              min_child_samples= 100,
+              max_bin= 100,
+              subsample= 0.7, 
+              subsample_freq= 1,
+              colsample_bytree= 0.7,
+              min_child_weight= 0,
+              min_split_gain= 0
+              #evice = "gpu"
+              #,
+              #scale_pos_weight=99.76
+              )
+```
+
+```{r}
+model <- lgb.train(params, dtrain, valids = list(validation = dvalid), nthread = 12,
+                   nrounds = 1000, verbose= 1, early_stopping_rounds = 30, eval_freq = 20)
+
+
+invisible(gc())
+
+cat("Validation AUC @ best iter: ", max(unlist(model$record_evals[["validation"]][["auc"]][["eval"]])), "\n\n")
+```
+
+
+```{r}
+cat("Setting up the submission file... \n")
+sub <- data.table(click_id = test$click_id, is_attributed = NA) 
+test$click_id <- NULL
+invisible(gc())
+```
+
+```{r}
+#*****************************************************************
+# Predictions
+
+#######################################################
+test_df <- as.matrix(test %>% select(-click_time,-day))
+cat("Predictions: \n")
+preds <- predict(model, data = test_df, n = model$best_iter)
+
+#######################################################
+
+cat("Converting to data frame: \n")
+preds <- as.data.frame(preds)
+
+#######################################################
+
+cat("Creating the submission data: \n")
+sub$is_attributed = preds
+
+#######################################################
+
+cat("Removing test... \n")
+#rm(test)
+invisible(gc())
+
+#######################################################
+
+cat("Rounding: \n")
+sub$is_attributed = round(sub$is_attributed, 9)
+
+#######################################################
+
+cat("Writing into a csv file: \n")
+fwrite(sub, "/home/rjs/바탕화면/adtrack/result/lgb_first.csv")
+
+```
+

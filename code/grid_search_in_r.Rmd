@@ -1,0 +1,183 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r}
+cat("
+-----------------------------------------------------------------------------------
+               Hyper Parameter Optimization with Random Grid Search
+-----------------------------------------------------------------------------------
+- Script inspired from suggestions of LightGBM contributors on this page:
+    https://github.com/Microsoft/LightGBM/issues/695
+- Follow in line comments to implement this approach depending on RAM 
+- End result is best params within chosen grid
+- View log for quick overview about complete process
+- This task is memory and time consuming so best advice is to try after feature engg.
+")
+
+# Load libraries
+library(needs)
+needs(knitr, pryr, tidyverse, data.table, caret, tictoc, lightgbm)
+set.seed(84)
+options(scipen = 9999, warn = -1, digits= 4)
+
+cat("
+-----------------------------------------------------------------------------------
+               Step 1: Construct training and validation data 
+-----------------------------------------------------------------------------------
+- Simply replace following code chunk with your training data and your choice of
+  validation split
+- You can also skip the data prep steps by simply loading the binaries.
+    # dtrain <- lgb.Dataset('train.buffer')
+    # dvalid <- lgb.Dataset('valid.buffer')
+- For illustration purpose, I'm using train sample. 
+")
+
+train <- fread("/home/rjs/바탕화면/adtrack/data/train.csv")
+train <- train %>% select(-attributed_time)
+train[,] <- lapply(train[], as.numeric)
+train <- as.data.frame(train)
+head(train)
+
+train.index <- createDataPartition(train$is_attributed, p = 0.9, list = FALSE)
+dtrain <- train[ train.index,]
+dvalid <- train[-train.index,]
+rm(train, train.index)
+invisible(gc())
+
+cat_features <- c("ip", "app", "channel", "device", "os")
+dtrain <- lgb.Dataset(data  = as.matrix(dtrain[, colnames(dtrain) != "is_attributed"]), 
+										label = dtrain$is_attributed, 
+										categorical_feature = cat_features)
+dvalid <- lgb.Dataset(data  = as.matrix(dvalid[, colnames(dvalid) != "is_attributed"]), 
+										label = dvalid$is_attributed, 
+										categorical_feature = cat_features)
+invisible(gc())
+
+
+
+cat("
+-----------------------------------------------------------------------------------
+               Step 2: Define grid and estimate total models 
+-----------------------------------------------------------------------------------
+- Add/ remove parameters in expand.grid function.
+- Specify range of values for chosen parameters
+  (best approach is to choose min, max and then narrowing down) 
+- Depending on parameters and range of values we can calcuate total number of models
+  to find optimal parameter.  
+")
+
+grid_search <- expand.grid(
+  num_leaves        = c(5,7,9,255),
+  max_depth         = c(4,6,8,48,64),
+  subsample         = c(0.7,0.9,1),
+  colsample_bytree  = c(0.7,0.9,1),
+  min_child_weight  = c(0,0.01,0.1),
+  scale_pos_weight  = c(100,200,300,400)
+)
+
+
+cat("Total # of models with above configuration: ", nrow(grid_search) , "\n")
+
+cat("
+-----------------------------------------------------------------------------------
+               Step 3: Estimate approx time 
+-----------------------------------------------------------------------------------
+- For the grid specified above, total number of models that needs to run are 2160
+- Next is to specify nrounds. 
+
+Calculation:
+- Number of models: 		2160
+- nrounds:					5
+- Runtime for each model: 	60 seconds (estimated based on full data)
+  Estimated total time:	    2160 * 60 = 129600 secs ~ 36 hours 
+
+- Try changing the params and/or ranges and get convenient estimated time. After that,
+  simply run the code chunk below with with your choice of grid search.
+")
+
+# sample grid search for illustration purpose only.
+grid_search <- expand.grid(
+  num_leaves        = c(3,5,7),
+  max_depth         = c(4,6,8),
+  subsample         = c(0.7,0.9),
+  colsample_bytree  = c(0.7,0.9),
+  min_child_weight  = c(0,0.01),
+  scale_pos_weight  = c(100,300)
+)
+
+cat("Total # of models with REDUCED configuration: ", nrow(grid_search) , "\n")
+
+model <- list()
+perf <- numeric(nrow(grid_search))
+
+tic("total time for grid search: ")
+for (i in 1:nrow(grid_search)) {
+  cat("Model ***", i , "*** of ", nrow(grid_search), "\n")
+  model[[i]] <- lgb.train(
+  	  list(objective         = "binary",
+	       metric            = "auc",
+	       learning_rate     = 0.1,
+	       min_child_samples = 100,
+	       max_bin           = 100,
+	       subsample_freq    = 1,
+	       num_leaves        = grid_search[i, "num_leaves"],
+	       max_depth         = grid_search[i, "max_depth"],
+	       subsample         = grid_search[i, "subsample"],
+	       colsample_bytree  = grid_search[i, "colsample_bytree"],
+	       min_child_weight  = grid_search[i, "min_child_weight"],
+	       scale_pos_weight  = grid_search[i, "scale_pos_weight"]),
+	  dtrain,
+	  valids = list(validation = dvalid),
+	  nthread = 4, 
+	  nrounds = 5, # increase/ decrease rounds
+	  verbose= 1, 
+	  early_stopping_rounds = 2
+	)
+  perf[i] <- max(unlist(model[[i]]$record_evals[["validation"]][["auc"]][["eval"]]))
+  invisible(gc()) # free up memory after each model run
+}
+toc()
+
+cat("
+-----------------------------------------------------------------------------------
+               Step 4: Print grid search result of best params
+-----------------------------------------------------------------------------------
+")
+
+# grid_search result
+cat("Model ", which.max(perf), " is max AUC: ", max(perf), sep = "","\n")
+best_params = grid_search[which.max(perf), ]
+fwrite(best_params,"best_params_for_sample_data.txt")
+
+cat("Best params within chosen grid search: ", "\n")
+t(best_params)
+
+cat("
+-----------------------------------------------------------------------------------
+                Guide on which params to tune/ NOT to tune
+        source: https://github.com/Microsoft/LightGBM/issues/695
+-----------------------------------------------------------------------------------
+
+For heavily unbalanced datasets such as 1:10000:
+
+- max_bin: keep it only for memory pressure, not to tune (otherwise overfitting)
+- learning rate: keep it only for training speed, not to tune (otherwise overfitting)
+- n_estimators: must be infinite and use early stopping to auto-tune (otherwise overfitting)
+- num_leaves: [7, 4095]
+- max_depth: [2, 63] and infinite 
+- scale_pos_weight: [1, 10000] 
+- min_child_weight: [0.01, (sample size / 1000)] 
+- subsample: [0.4, 1]
+- bagging_fraction: only 1, keep as is (otherwise overfitting)
+- colsample_bytree: [0.4, 1]
+
+Never tune following parameters unless you have an explicit requirement to tune them:
+
+- Learning rate (lower means longer to train but more accurate, higher means smaller to train but less accurate)
+- Number of boosting iterations (automatically tuned with early stopping and learning rate)
+- Maximum number of bins (RAM dependent)
+")
+```
+

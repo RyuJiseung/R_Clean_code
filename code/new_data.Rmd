@@ -1,0 +1,270 @@
+
+# 내부수집정보
+
+```{r}
+# packages load
+# install.packages("needs")
+library(needs)
+needs(dplyr,tibble,lubridate,ggplot2,tidyr,readr,gridExtra)
+```
+
+```{r}
+# data load
+data = read.csv("../data/500pois_collected_manytimes_reEncoded.csv",encoding="iso-8859-1")
+
+data <- data %>% select(-X)
+
+data$date <- substr(data$date_utc,1,10) 
+data$hr <- substr(data$date_utc,12,13) %>% as.numeric()
+data$mn <- substr(data$date_utc,15,16) %>% as.numeric()
+data$se <- substr(data$date_utc,18,19) %>% as.numeric()
+data <- data %>% select(-date_utc)
+data <- data %>% select(date,hr,mn,se,pid,wifi,floor)
+data$wifi <- data$wifi %>% paste("\t")
+data$date <- as.Date(data$date)
+```
+
+### 내부 수집된 매장 번호 개수
+```{r}
+# table(data$pid)[table(data$pid) == 1]
+# 470702 470968 470981 473412 473473
+# 내부 수집이 한번 된 것 제외
+
+data <- data %>% subset(!pid %in% (table(data$pid)[table(data$pid) == 1] %>% dimnames %>% .[[1]] %>% as.numeric))
+
+table(data$pid) %>% length
+# 497개
+```
+
+### 매장 선택
+```{r}
+all_pid_data <-c()
+
+for (k in 1:length(data$pid %>% table %>% dimnames %>% .[[1]])){
+nowpid <- data$pid %>% table %>% dimnames %>% .[[1]] %>% .[k]
+data1 <- data %>% subset(pid == nowpid)
+
+new_data_test <- data1$wifi %>%
+  strsplit("\t") %>%
+  lapply(function(x){matrix(x,ncol=5,byrow=TRUE)[,c(1:4)]})
+
+# wifi new table list
+new_data <- data1$wifi %>%
+  strsplit("\t") %>%
+  lapply(function(x){matrix(x,ncol=5,byrow=TRUE)[,c(1,3,4)] %>% as.tibble(ncol = 3)})
+
+# remove wifi information if there is only one
+remove_list <- c()
+j=1
+for(i in 1:length(new_data)){
+  if(new_data[[i]] %>% length == 1){
+    remove_list[j] <- i
+    j=j+1
+  }
+}
+
+
+for(i in remove_list){
+new_data[[i]] <- data.table(V1 = new_data[[i]][1,], V2 = new_data[[i]][2,]) %>% as.tibble
+colnames(new_data[[i]]) <- c("V1","V2")}
+
+# new format of wifi information 
+for (i in 1:length(new_data)){
+  new_data[[i]] <- data1 %>% .$date %>% .[i] %>% ymd %>% rep(nrow(new_data[[i]])) %>%
+        cbind(index = i,
+              new_data[[i]])
+  
+  colnames(new_data[[i]]) <- c("date","index","bssid","rssi","frequency")
+}
+
+# list to table
+total_data <- new_data[[1]]
+for(i in 2:length(new_data)){
+  total_data <- rbind(total_data,new_data[[i]])
+}
+total_data$bssid <- as.factor(total_data$bssid)
+total_data$rssi <- as.numeric(total_data$rssi)
+total_data$frequency <- as.numeric(total_data$frequency)
+
+total_data <- total_data %>% group_by(date, index, bssid) %>% summarise(rssi = mean(rssi), frequency = mean(frequency))
+
+total_data$pid <- nowpid
+all_pid_data <- all_pid_data %>% rbind(total_data)
+}
+
+all_pid_data <- all_pid_data %>% arrange(pid,date) %>% select(pid,date,everything())
+```
+
+```{r}
+all_pid_data %>% 
+  subset(rssi>-50) %>% 
+  group_by(pid,bssid) %>% 
+  summarise(high_rssi_cnt = n()) %>% 
+  group_by(pid) %>% summarise(high_rssi_bssid_cnt = n()) %>% 
+  arrange(desc(high_rssi_bssid_cnt)) %>% 
+  head(230) %>% .$pid
+```
+
+```{r}
+## date -> factor형 변환
+# total_data_change <- total_data %>% subset(rssi > -80)
+# for (k in 1:length(data$pid %>% table %>% dimnames %>% .[[1]])){
+# nowpid <- datapid %>% table %>% dimnames %>% .[[1]] %>% .[k]
+nowpid <- 11058
+total_data_change <- all_pid_data %>% subset(pid==nowpid)
+total_data_change$date <- as.factor(total_data_change$date)
+
+
+geom.text.size = 1.8
+
+order_bssid <- total_data_change %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_change$bssid <- total_data_change$bssid %>% ordered(levels = order_bssid$bssid)
+
+p1 <- total_data_change %>% ggplot(aes(x=bssid,y=date,color="red")) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  geom_text(aes(x=bssid, y=date,label=as.numeric(rssi)),  size=geom.text.size, color = "white") +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+# ggsave(paste0(nowpid,"_type_1.png"), plot = p1, width = 14, height = 10)
+# }
+p1
+```
+
+### wifi bssid plot 1
+
+한 매장에 rank1,2,3으로 로그 기록이 남았던 모든 와이파이 bssid들이 각 date에서 나온 rssi 결과값을 표시해놓았다. 
+rssi 값은 -이고, -90이 -40보다 어두운 색으로 표시되어 있다.
+RSSI값의 레인지는 보통 -99 에서 -35 까지 이며, 숫자가 높으면 높을 수록 신호의 강도가 쎄다고 볼 수 있다.
+두 그림의 차이는 시간을 시간순으로 나열했는지, 아니면 factor로 인식하고 한 방문당 한 row(한 줄)를 차지하도록 그림이 그려졌는지 차이다.
+
+```{r}
+geom.text.size = 1.8
+
+order_bssid <- total_data_change %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_change$bssid <- total_data_change$bssid %>% ordered(levels = order_bssid$bssid)
+
+total_data_change %>% ggplot(aes(x=bssid,y=date,color="red")) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  geom_text(aes(x=bssid, y=date,label=as.numeric(rssi)),  size=geom.text.size, color = "white") +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+### wifi bssid plot 2
+
+한 매장에서 처음 내부 수집된 와이파이 bssid들이 각 date에서 나온 rssi 결과값을 표시해놓았다.
+
+```{r}
+bssid_index2 <- total_data_change %>% .$index %>% unique %>% .[1]
+bssid_unique2 <- total_data_change %>% subset(index==bssid_index2) %>% arrange(desc(rssi))
+
+total_data_change2 <-  total_data_change %>% subset(bssid %in% bssid_unique2$bssid)
+total_data_change2$bssid <- as.factor(total_data_change2$bssid)
+total_data_change2$bssid <- total_data_change2$bssid %>% ordered(levels = bssid_unique2$bssid)
+
+
+total_data_change2 %>% ggplot(aes(x=bssid,y=date,color="red")) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  geom_text(aes(x=bssid, y=date,label=as.numeric(rssi)),  size=geom.text.size, color = "white") +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+### wifi bssid plot 3
+
+한 매장에서 두번째 내부 수집된 와이파이 bssid들이 각 date에서 나온 rssi 결과값을 표시해놓았다.
+
+```{r}
+bssid_index3 <- total_data_change %>% .$index %>% unique %>% .[2]
+bssid_unique3 <- total_data_change %>% subset(index==bssid_index3) %>% arrange(desc(rssi))
+
+total_data_change3 <-  total_data_change %>% subset(bssid %in% bssid_unique3$bssid)
+total_data_change3$bssid <- as.factor(total_data_change3$bssid)
+total_data_change3$bssid <- total_data_change3$bssid %>% ordered(levels = bssid_unique3$bssid)
+
+
+total_data_change3 %>% ggplot(aes(x=bssid,y=date,color="red")) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  geom_text(aes(x=bssid, y=date,label=as.numeric(rssi)),size=geom.text.size, color = "white") +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+### wifi bssid plot 4
+
+한 매장에서 세번째 내부 수집된 와이파이 bssid들이 각 date에서 나온 rssi 결과값을 표시해놓았다.
+
+
+```{r}
+bssid_index4 <- total_data_change %>% .$index %>% unique %>% .[3]
+bssid_unique4 <- total_data_change %>% subset(index==bssid_index4) %>% arrange(desc(rssi))
+
+total_data_change4 <-  total_data_change %>% subset(bssid %in% bssid_unique4$bssid)
+total_data_change4$bssid <- as.factor(total_data_change4$bssid)
+total_data_change4$bssid <- total_data_change4$bssid %>% ordered(levels = bssid_unique4$bssid)
+
+total_data_change4 %>% ggplot(aes(x=bssid,y=date,color="red")) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  geom_text(aes(x=bssid, y=date,label=as.numeric(rssi)),  size=geom.text.size, color = "white") +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+```
+
+### wifi bssid plot 5
+
+한 매장에서 네번째 내부 수집된 와이파이 bssid들이 각 date에서 나온 rssi 결과값을 표시해놓았다.
+
+
+```{r}
+bssid_index5 <- total_data_change %>% .$index %>% unique %>% last
+bssid_unique5 <- total_data_change %>% subset(index==bssid_index5) %>% arrange(desc(rssi))
+
+total_data_change5 <-  total_data_change %>% subset(bssid %in% bssid_unique5$bssid)
+total_data_change5$bssid <- as.factor(total_data_change5$bssid)
+total_data_change5$bssid <- total_data_change5$bssid %>% ordered(levels = bssid_unique5$bssid)
+
+total_data_change5 %>% ggplot(aes(x=bssid,y=date,color="red")) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  geom_text(aes(x=bssid, y=date,label=as.numeric(rssi)),  size=geom.text.size, color = "white") +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+```
+
+```{r}
+# 주파수 빼고 생각해보자. 별 의미 없는 거 같아요!!(test_freq_bridge_rssi.R)
+
+# 어느 정도 되면 와이파이 신호가 안잡힐까? -> 실험적으로 알아봐야하나>
+# 매장으로 인식 안될정도는 언제인가? 어느정도 와이파이 변화가 일어나야 매장으로 인식을 못할까?를 알아야 한다.
+# 이걸 정하면 이제 실험해보면 된다!! -80기준이든 뭐든 그건 좀이따의 상황인듯?
+
+# 와이파이를 버릴건 버리자 예를들어, -80을 기준으로 삭제를 한다거나??
+# 이건 실제에서 확인해봐야할거같아
+
+## 여기서 나는 무엇을 하고 싶은가?
+#### 내부 수집에서 나타난 와이파이 10개 중에 6개만 검출되면 1/2 * 6/10, 
+#### 전체 와이파이 10개에서 새로운 와이파이 4개가 잡히면 
+#### 1/2 * (1-4/10) 식으로 가중치를 줘서 값을 구할 수 있지 않을까?
+```
+

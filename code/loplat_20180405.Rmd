@@ -1,0 +1,942 @@
+
+
+```{r}
+# packages load
+# install.packages("needs")
+library(needs)
+needs(dplyr,tibble,lubridate,ggplot2,tidyr,readr,gridExtra,data.table)
+```
+
+```{r}
+# data_origin load
+data_origin <- read_tsv("/home/rjs/바탕화면/loplat/data/results_KAIST_70_pids_refined_final.tsv",skip = 3) 
+data <- read.csv("/home/rjs/바탕화면/loplat/data/500pois_collected_manytimes_reEncoded.csv"
+                  ,encoding="iso-8859-1")
+data$wifi <- data$wifi %>% paste("\t")
+data <- data %>% subset(pid %in% data_origin$pid)
+data_type <- data
+
+data_type <- data_type %>% select(-X,-floor)
+colnames(data_type) <- c("date","pid","wifi")
+data_type <- data_type %>% mutate(similarity=0.9999,threshold=0.99,threshold=0,rank=1,type=1)
+data_type <- data_type %>% select(colnames(data_origin))
+data_origin <- data_origin %>% rbind(data_type)
+```
+
+```{r}
+# change data_origin format
+data_origin[,c("rank","type")] <- lapply(data_origin[,c("rank","type")],as.factor)
+```
+
+### 매장 번호 선택
+```{r}
+# pid change
+# nowpid <- table(data_origin$pid) %>% names %>% .[3]
+# 못쓰겠는 번호 : 1번째 - 241
+# 괜찮은 매장번호 선택해서 지금 주어진 것으로 살펴보고 싶은 것 살펴보기
+
+data <- data %>% select(-X)
+
+data$date <- substr(data$date_utc,1,10) 
+data$hr <- substr(data$date_utc,12,13) %>% as.numeric()
+data$mn <- substr(data$date_utc,15,16) %>% as.numeric()
+data$se <- substr(data$date_utc,18,19) %>% as.numeric()
+data <- data %>% select(-date_utc)
+data <- data %>% select(date,hr,mn,se,pid,wifi,floor)
+data$date <- as.Date(data$date)
+```
+
+### 내부 수집된 매장 번호 개수
+```{r}
+# table(data$pid)[table(data$pid) == 1]
+# 470702 470968 470981 473412 473473
+# 내부 수집이 한번 된 것 제외
+
+data <- data %>% subset(!pid %in% (table(data$pid)[table(data$pid) == 1] %>% dimnames %>% .[[1]] %>% as.numeric))
+
+table(data$pid) %>% length
+# 61개
+```
+
+### 매장 선택
+```{r}
+# k : 1-241 remove, 2-562, 4-787, 7-1077
+# select : k : 3-579(good) , 9-1278(so so), 10-1371(not bad), 11-1390(good), 
+# similarity first make
+
+
+k = 11
+nowpid_test <- data$pid %>% table %>% dimnames %>% .[[1]] %>% .[k]
+nowpid <- nowpid_test
+
+# eda
+data_origin %>% subset(pid==nowpid) %>% summary
+# data_origin %>% subset(pid==nowpid) %>% View
+```
+
+## EDA
+```{r}
+data_origin %>% 
+  subset(pid==nowpid) %>% 
+  subset(rank==1) %>% 
+  group_by(date) %>% 
+  summarise(rank_1_cnt=n(),similarity_up = sum(similarity > threshold)) %>%
+  ggplot(aes(x=as.factor(date),y=rank_1_cnt)) + geom_bar(stat = "identity") +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+data_origin %>% 
+  subset(pid==nowpid) %>% 
+  subset(rank==1) %>% 
+  group_by(date) %>% 
+  summarise(rank_1_cnt=n(),similarity_up = sum(similarity > threshold)) %>%
+  ggplot(aes(x=as.factor(date),y=similarity_up)) + geom_bar(stat = "identity") +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+data_origin %>% 
+  subset(pid==nowpid) %>% 
+  subset(rank==1) %>% 
+  group_by(date) %>% 
+  summarise(rank_1_cnt=n(),similarity_up = sum(similarity > threshold)) %>%
+  ggplot(aes(x=as.factor(date),y=similarity_up/rank_1_cnt)) + geom_bar(stat = "identity") +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+## 방문 빈도가 항상 다르기 때문에 언제 와이파이 신호에 따라 방문이 안찍히는지 파악하기가 어렵다...
+## similarity를 만들자...!
+## 
+
+```
+
+```{r}
+## 여기서 나는 무엇을 하고 싶은가?
+#### 내부 수집에서 나타난 와이파이 10개 중에 6개만 검출되면 1/2 * 6/10, 
+#### 전체 와이파이 10개에서 새로운 와이파이 4개가 잡히면 
+#### 1/2 * (1-4/10) 식으로 가중치를 줘서 값을 구할 수 있지 않을까?
+## similarity를 만들 때 -80을 기준으로 하면 어떨까?
+## 10단위로 가중치를 주는것도 괜찮지 않을까?
+
+
+## 가장 최근에 내부 수집되었던 와이파이 정보와의 similarity와 
+## 최근 이주일동안 수집되었던 유사성 높은 와이파이 정보와의 similarity를 섞어서 사용하면 어떨까?
+
+
+## 유클리디안 distance : 제곱합 루트, 맨하탄 distance : 절대값합
+## The Gauss distance , The Kernel method
+
+```
+
+```{r}
+data_origin %>% 
+    subset(pid==nowpid) %>% subset(rank == 1) %>%
+    ggplot(aes(x=date,y=similarity)) + geom_line(color="black") +
+    geom_line(aes(x=date,y=threshold),color="blue") + 
+    geom_vline(xintercept = data_origin %>% subset(pid==nowpid) %>% subset(type==1) %>% .$date,color="red") +
+    theme(strip.background = element_blank(), strip.text = element_blank()) 
+
+```
+
+```{r}
+# plot function 1
+date_similarity_threshold_plot_1 <- function(data_origin,nowpid){
+
+p1 <- data_origin %>% 
+  subset(pid==nowpid) %>% 
+  ggplot(aes(x=date,y=similarity)) + geom_line(color="black") +
+  geom_line(aes(x=date,y=threshold),color="blue") + 
+  geom_vline(xintercept = data_origin %>% subset(pid==nowpid) %>% subset(type==1) %>% .$date,color="red") +
+  facet_grid(rank~.) + 
+  theme(strip.background = element_blank(), strip.text = element_blank()) +
+  ylab("rank3 / rank2 / rank1")
+
+p2 <- data_origin %>% 
+  subset(pid==nowpid) %>% 
+  ggplot(aes(x=date,y=similarity)) + geom_line(color="black") +
+  geom_line(aes(x=date,y=threshold),color="blue") + 
+  geom_vline(xintercept = data_origin %>% subset(pid==nowpid) %>% subset(type==1) %>% .$date,color="red") +
+  ylab("total")
+
+# png(filename=paste0(nowpid,".png"))
+grid.arrange(p1,p2, nrow = 2, heights = c(0.7, 0.3))
+# dev.off()
+}
+
+# for(i in 1:30){
+# nowpid <- table(data_origin$pid) %>% names %>% .[i]
+# date_similarity_threshold_plot(data_origin,nowpid)}
+```
+
+```{r}
+# plot function 2
+date_similarity_threshold_plot_2 <- function(data_origin,nowpid){
+
+p1 <- data_origin %>% 
+  subset(pid==nowpid) %>% 
+  group_by(date, rank, pid) %>% 
+  summarise(similarity = mean(similarity),threshold = mean(threshold)) %>%
+  ggplot(aes(x=date,y=similarity)) + geom_line(color="black") +
+  geom_line(aes(x=date,y=threshold),color="blue") + 
+  geom_vline(xintercept = data_origin %>% subset(pid==nowpid) %>% subset(type==1) %>% .$date,color="red") +
+  facet_grid(rank~.) + 
+  theme(strip.background = element_blank(), strip.text = element_blank()) +
+  ylab("rank3 / rank2 / rank1")
+
+p2 <- data_origin %>% 
+  subset(pid==nowpid) %>% 
+  group_by(date, rank, pid) %>% 
+  summarise(similarity = mean(similarity),threshold = mean(threshold)) %>%
+  ggplot(aes(x=date,y=similarity)) + geom_line(color="black") +
+  geom_line(aes(x=date,y=threshold),color="blue") + 
+  geom_vline(xintercept = data_origin %>% subset(pid==nowpid) %>% subset(type==1) %>% .$date,color="red") +
+  ylab("total")
+
+# png(filename=paste0(nowpid,".png"))
+grid.arrange(p1,p2, nrow = 2, heights = c(0.7, 0.3))
+# dev.off()
+}
+
+# for(i in 1:30){
+# nowpid <- table(data_origin$pid) %>% names %>% .[i]
+# date_similarity_threshold_plot(data_origin,nowpid)}
+```
+
+```{r}
+# plot function 3
+date_similarity_threshold_plot_3 <- function(data_origin,nowpid){
+
+p1 <- data_origin %>% 
+  subset(pid==nowpid) %>% 
+  group_by(date, rank, pid) %>% 
+  summarise(similarity = max(similarity),threshold = mean(threshold)) %>%
+  ggplot(aes(x=date,y=similarity)) + geom_line(color="black") +
+  geom_line(aes(x=date,y=threshold),color="blue") + 
+  geom_vline(xintercept = data_origin %>% subset(pid==nowpid) %>% subset(type==1) %>% .$date,color="red") +
+  facet_grid(rank~.) + 
+  theme(strip.background = element_blank(), strip.text = element_blank()) +
+  ylab("rank3 / rank2 / rank1")
+
+p2 <- data_origin %>% 
+  subset(pid==nowpid) %>% 
+  group_by(date, rank, pid) %>% 
+  summarise(similarity = max(similarity),threshold = mean(threshold)) %>%
+  ggplot(aes(x=date,y=similarity)) + geom_line(color="black") +
+  geom_line(aes(x=date,y=threshold),color="blue") + 
+  geom_vline(xintercept = data_origin %>% subset(pid==nowpid) %>% subset(type==1) %>% .$date,color="red") +
+  ylab("total")
+
+# png(filename=paste0(nowpid,".png"))
+grid.arrange(p1,p2, nrow = 2, heights = c(0.7, 0.3))
+# dev.off()
+}
+
+# for(i in 1:30){
+# nowpid <- table(data_origin$pid) %>% names %>% .[i]
+# date_similarity_threshold_plot(data_origin,nowpid)}
+```
+
+```{r}
+# plot function 4
+date_similarity_threshold_plot_4 <- function(data_origin,nowpid){
+
+mav <- function(x,n){stats::filter(x,rep(1/n,n), sides=2) %>% as.vector}
+
+keep_data_origin <- data_origin %>% subset(rank == 1) %>% 
+                  subset(pid==nowpid)
+
+
+keep_data_origin$similar_mav_10 <- keep_data_origin$similarity %>% mav(10)
+
+keep_data_origin$similar_mav_20 <- keep_data_origin$similarity %>% mav(20)
+keep_data_origin$thres_mav_20 <- keep_data_origin$threshold %>% mav(20)
+
+p1 <- keep_data_origin %>%
+  ggplot(aes(x=date,y=similarity)) + geom_line(color="black") +
+  geom_line(aes(x=date,y=thres_mav_20),color="orange",size=1,alpha=0.8) + 
+  geom_line(aes(x=date,y=similar_mav_10),color="blue",size=1,alpha=0.8) + 
+  geom_line(aes(x=date,y=similar_mav_20),color="purple",size=1,alpha=0.8) + 
+  geom_vline(xintercept = data_origin %>% subset(pid==nowpid) %>% subset(type==1,alpha=0.8) %>% .$date,color="red") +
+  ggtitle("total")
+
+##
+
+keep_data_origin <- data_origin %>% 
+  subset(rank == 1) %>% 
+  subset(similarity > threshold) %>% 
+  subset(pid==nowpid)
+
+
+keep_data_origin$similar_mav_10 <- keep_data_origin$similarity %>% mav(10)
+
+keep_data_origin$similar_mav_20 <- keep_data_origin$similarity %>% mav(20)
+keep_data_origin$thres_mav_20 <- keep_data_origin$threshold %>% mav(20)
+
+p2 <- keep_data_origin %>%
+  ggplot(aes(x=date,y=similarity)) + geom_line(color="black") +
+  geom_line(aes(x=date,y=thres_mav_20),color="orange",size=1,alpha=0.8) + 
+  geom_line(aes(x=date,y=similar_mav_10),color="blue",size=1,alpha=0.8) + 
+  geom_line(aes(x=date,y=similar_mav_20),color="purple",size=1,alpha=0.8) + 
+  geom_vline(xintercept = data_origin %>% subset(pid==nowpid) %>% subset(type==1,alpha=0.8) %>% .$date,color="red") +
+  ggtitle("similarity > threshold")
+
+
+grid.arrange(p1,p2, nrow = 2)
+}
+```
+
+```{r}
+# plot function 5
+date_similarity_threshold_plot_5 <- function(data_origin,nowpid){
+
+mav <- function(x,n){stats::filter(x,rep(1/n,n), sides=2) %>% as.vector}
+
+keep_data_origin <- data_origin %>% subset(rank == 1) %>% 
+                  subset(pid==nowpid) %>% 
+                  group_by(date, rank, pid) %>% 
+                  summarise(similarity = mean(similarity),threshold = mean(threshold))
+
+
+keep_data_origin$similar_mav_10 <- keep_data_origin$similarity %>% mav(10)
+
+keep_data_origin$similar_mav_20 <- keep_data_origin$similarity %>% mav(20)
+keep_data_origin$thres_mav_20 <- keep_data_origin$threshold %>% mav(20)
+
+p1 <- keep_data_origin %>%
+  ggplot(aes(x=date,y=similarity)) + geom_line(color="black") +
+  geom_line(aes(x=date,y=thres_mav_20),color="orange",size=1,alpha=0.8) + 
+  geom_line(aes(x=date,y=similar_mav_10),color="blue",size=1,alpha=0.8) + 
+  geom_line(aes(x=date,y=similar_mav_20),color="purple",size=1,alpha=0.8) + 
+  geom_vline(xintercept = data_origin %>% subset(pid==nowpid) %>% subset(type==1,alpha=0.8) %>% .$date,color="red") +
+  ggtitle("total")
+
+##
+
+keep_data_origin <- data_origin %>% 
+  subset(rank == 1) %>% 
+  subset(similarity > threshold) %>% 
+  subset(pid==nowpid) %>% 
+  group_by(date, rank, pid) %>% 
+  summarise(similarity = mean(similarity),threshold = mean(threshold))
+
+
+keep_data_origin$similar_mav_10 <- keep_data_origin$similarity %>% mav(10)
+
+keep_data_origin$similar_mav_20 <- keep_data_origin$similarity %>% mav(20)
+keep_data_origin$thres_mav_20 <- keep_data_origin$threshold %>% mav(20)
+
+p2 <- keep_data_origin %>%
+  ggplot(aes(x=date,y=similarity)) + geom_line(color="black") +
+  geom_line(aes(x=date,y=thres_mav_20),color="orange",size=1,alpha=0.8) + 
+  geom_line(aes(x=date,y=similar_mav_10),color="blue",size=1,alpha=0.8) + 
+  geom_line(aes(x=date,y=similar_mav_20),color="purple",size=1,alpha=0.8) + 
+  geom_vline(xintercept = data_origin %>% subset(pid==nowpid) %>% subset(type==1,alpha=0.8) %>% .$date,color="red") +
+  ggtitle("similarity > threshold")
+
+
+grid.arrange(p1,p2, nrow = 2)
+}
+```
+
+```{r}
+date_similarity_threshold_plot_6 <- function(data_origin,nowpid){
+
+mav <- function(x,n){stats::filter(x,rep(1/n,n), sides=2) %>% as.vector}
+
+keep_data_origin <- data_origin %>% subset(rank == 1) %>% 
+                  subset(pid==nowpid) %>% 
+                  group_by(date, rank, pid) %>% 
+                  summarise(similarity = max(similarity),threshold = mean(threshold))
+
+
+keep_data_origin$similar_mav_10 <- keep_data_origin$similarity %>% mav(10)
+
+keep_data_origin$similar_mav_20 <- keep_data_origin$similarity %>% mav(20)
+keep_data_origin$thres_mav_20 <- keep_data_origin$threshold %>% mav(20)
+
+p1 <- keep_data_origin %>%
+  ggplot(aes(x=date,y=similarity)) + geom_line(color="black") +
+  geom_line(aes(x=date,y=thres_mav_20),color="orange",size=1,alpha=0.8) + 
+  geom_line(aes(x=date,y=similar_mav_10),color="blue",size=1,alpha=0.8) + 
+  geom_line(aes(x=date,y=similar_mav_20),color="purple",size=1,alpha=0.8) + 
+  geom_vline(xintercept = data_origin %>% subset(pid==nowpid) %>% subset(type==1,alpha=0.8) %>% .$date,color="red") +
+  ggtitle("total")
+
+##
+
+keep_data_origin <- data_origin %>% 
+  subset(rank == 1) %>% 
+  subset(similarity > threshold) %>% 
+  subset(pid==nowpid) %>% 
+  group_by(date, rank, pid) %>% 
+  summarise(similarity = max(similarity),threshold = mean(threshold))
+
+
+keep_data_origin$similar_mav_10 <- keep_data_origin$similarity %>% mav(10)
+
+keep_data_origin$similar_mav_20 <- keep_data_origin$similarity %>% mav(20)
+keep_data_origin$thres_mav_20 <- keep_data_origin$threshold %>% mav(20)
+
+p2 <- keep_data_origin %>%
+  ggplot(aes(x=date,y=similarity)) + geom_line(color="black") +
+  geom_line(aes(x=date,y=thres_mav_20),color="orange",size=1,alpha=0.8) + 
+  geom_line(aes(x=date,y=similar_mav_10),color="blue",size=1,alpha=0.8) + 
+  geom_line(aes(x=date,y=similar_mav_20),color="purple",size=1,alpha=0.8) + 
+  geom_vline(xintercept = data_origin %>% subset(pid==nowpid) %>% subset(type==1,alpha=0.8) %>% .$date,color="red") +
+  ggtitle("similarity > threshold")
+
+
+grid.arrange(p1,p2, nrow = 2)
+}
+```
+
+### similarity & threshold plot 1
+
+첫번째 그림은 rank1,2,3을 나누어서 각각 similarity, threshold를 그린 그림이고, threshold는 파란색, similarity는 검은색, 수집을 진행한 날짜는 빨간색으로 표시하였다.
+
+두번째 그림은 첫번째 그림을 모두 합쳐서 그려놓은 그림이고 위와 동일하다.
+
+```{r}
+date_similarity_threshold_plot_1(data_origin,nowpid)
+```
+
+
+### similarity & threshold plot 2
+
+전처리 : date, rank, pid 기준으로 similarity, threshold를 평균처리해줬음.
+
+```{r}
+date_similarity_threshold_plot_2(data_origin,nowpid)
+```
+
+
+### similarity & threshold plot 3
+
+전처리 : date, rank, pid 기준으로 similarity가 가장 큰 것을 선택
+
+```{r}
+date_similarity_threshold_plot_3(data_origin,nowpid)
+```
+
+
+### similarity & threshold plot 4
+
+전처리 : rank 1인 것들만 살펴봄 
+
+주황 : threshold의 20일 기준 moving average
+
+파랑 : similarity의 10일 기준 moving average
+
+보라 : similarity의 20일 기준 moving average
+
+검정 : similarity
+
+```{r}
+# date_similarity_threshold_plot_4(data_origin,nowpid)
+```
+
+### similarity & threshold plot 5
+
+전처리 : rank 1 / date, rank, pid 기준으로 similarity를 평균하여 선택
+
+
+
+```{r}
+# date_similarity_threshold_plot_5(data_origin,nowpid)
+```
+
+
+
+### similarity & threshold plot 6
+
+전처리 : rank 1 / date, rank, pid 기준으로 similarity가 가장 큰 것을 선택
+
+```{r}
+# date_similarity_threshold_plot_6(data_origin,nowpid)
+```
+
+# HERE
+```{r}
+# data_origin condition
+data_origin1 <- data_origin %>%
+  subset(rank == 1) %>%
+  # subset(similarity > threshold) %>%
+  subset(pid==nowpid)
+```
+
+
+```{r}
+# wifi new table list
+new_data_origin <- ifelse(as.numeric(as.character(data_origin1$type))==0, 
+                                  data_origin1 %>% 
+                                  .$wifi %>% 
+                                  strsplit(",") %>% 
+                                  lapply(function(x){matrix(x,ncol=4,byrow=TRUE)[,c(1,3)] %>% 
+                                      as.tibble(ncol = 2)}),
+                          data_origin1 %>% 
+                                  .$wifi %>% 
+                                  strsplit("\t") %>% 
+                                  lapply(function(x){matrix(x,ncol=5,byrow=TRUE)[,c(1,3)] %>% 
+                                      as.tibble(ncol = 2)}))
+
+  
+```
+
+```{r}
+# remove wifi information if there is only one
+remove_list <- c()
+j=1
+for(i in 1:length(new_data_origin)){
+  if(new_data_origin[[i]] %>% length == 1){
+    remove_list[j] <- i
+    j=j+1
+  }
+}
+
+for(i in remove_list){
+new_data_origin[[i]] <- data.table(V1 = new_data_origin[[i]][1,], V2 = new_data_origin[[i]][2,]) %>% as.tibble
+colnames(new_data_origin[[i]]) <- c("V1","V2")}
+# new_data_origin[remove_list] <- NULL
+```
+
+```{r}
+# new format of wifi information 
+print(length(new_data_origin))
+for (i in 1:length(new_data_origin)){
+  new_data_origin[[i]] <- data_origin1 %>% .$date %>% .[i] %>% ymd %>% rep(nrow(new_data_origin[[i]])) %>%
+        cbind(index = i,
+              type = data_origin1 %>% .$type %>% .[i] %>% rep(nrow(new_data_origin[[i]])),
+              new_data_origin[[i]])
+  colnames(new_data_origin[[i]]) <- c("date","index","type","bssid","rssi")
+  if(i%%1000==0)cat(paste0(i,"_finish\n"))
+}
+```
+
+
+```{r}
+# list to table
+total_data_origin <-  new_data_origin[[i]]
+for(i in 2:length(new_data_origin)){
+  if(i%%1000==0)cat(paste0(i,"_start\n"))
+  total_data_origin <- rbind(total_data_origin,new_data_origin[[i]])
+}
+total_data_origin$bssid <- as.factor(total_data_origin$bssid)
+total_data_origin$rssi <- as.numeric(total_data_origin$rssi)
+```
+
+```{r}
+# date -> factor형 변환
+total_data_origin_change <- total_data_origin
+total_data_origin_change$date <- as.factor(as.character(total_data_origin_change$date))
+```
+
+
+```{r}
+geom.text.size = 1.8
+
+order_bssid <- total_data_origin_change %>% subset(type==1) %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_origin_change$bssid <- total_data_origin_change$bssid %>% ordered(levels = order_bssid$bssid)
+
+total_data_origin_change %>% subset(type==1) %>% 
+  ggplot(aes(x=bssid,y=date,color="red")) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  geom_text(aes(x=bssid, y=date,label=as.numeric(rssi)),  size=geom.text.size, color = "white") +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+### wifi bssid plot 1
+
+한 매장에 rank1,2,3으로 로그 기록이 남았던 모든 와이파이 bssid들이 각 date에서 나온 rssi 결과값을 표시해놓았다. 
+rssi 값은 -이고, -90이 -40보다 어두운 색으로 표시되어 있다.
+
+두 그림의 차이는 시간을 시간순으로 나열했는지, 아니면 factor로 인식하고 한 방문당 한 row(한 줄)를 차지하도록 그림이 그려졌는지 차이다.
+
+
+```{r}
+order_bssid <- total_data_origin %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_origin$bssid <- total_data_origin$bssid %>% ordered(levels = order_bssid$bssid)
+
+total_data_origin %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+##
+order_bssid <- total_data_origin_change %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_origin_change$bssid <- total_data_origin_change$bssid %>% ordered(levels = order_bssid$bssid)
+
+total_data_origin_change %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+### wifi bssid plot 2
+
+한 매장에서 내부 수집된 모든 와이파이 bssid들이 각 date에서 나온 rssi 결과값을 표시해놓았다.
+plot 1과의 차이점은 내부 수집된 모든 와이파이 bssid들의 정보만 나와있다는 것이다.
+
+빨간색, 파란색, 초록색이 구분되어 있는 plot은 전체에서 내부 수집된 모든 와이파이 bssid들을 구분해 놓은 것이다. 초록색 => 내부 수집된 모든 와이파이, 빨간색 => 내부 수집된 시점
+
+```{r}
+# type=1 all bssid
+bssid_index <- total_data_origin %>% subset(type==1) %>% .$index %>% unique %>% .[2]
+bssid_unique <- total_data_origin %>% subset(index==bssid_index) %>% .$bssid
+
+order_bssid <- total_data_origin %>% subset(index==bssid_index) %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_origin1 <-  total_data_origin %>% subset(bssid %in% bssid_unique)
+total_data_origin1$bssid <- total_data_origin1$bssid %>% ordered(levels = order_bssid$bssid)
+
+total_data_origin1 %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+# total_data_origin$checked_wifi <- ifelse(total_data_origin$bssid %in% bssid_unique,1,0) %>% as.factor
+total_data_origin$checked_wifi_type <- total_data_origin %>% with(ifelse(type ==1 ,1,
+                                                           ifelse(bssid %in% bssid_unique & type ==0 ,2,
+                                                                  ifelse(!bssid %in% bssid_unique & type ==1, 3, 4)))) %>% as.factor
+
+# order_bssid <- total_data_origin %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+# order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+# total_data_origin$bssid <- total_data_origin$bssid %>% ordered(levels = order_bssid$bssid)
+
+
+total_data_origin %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = checked_wifi_type)) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+##
+
+bssid_index <- total_data_origin_change %>% subset(type==1) %>% .$index %>% unique %>% .[2]
+bssid_unique <- total_data_origin_change %>% subset(index==bssid_index) %>% .$bssid
+
+order_bssid <- total_data_origin_change %>% subset(index==bssid_index) %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_origin_change1 <-  total_data_origin_change %>% subset(bssid %in% bssid_unique)
+total_data_origin_change1$bssid <- total_data_origin_change1$bssid %>% ordered(levels = order_bssid$bssid)
+
+total_data_origin_change1 %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+
+# total_data_origin_change$checked_wifi <- ifelse(total_data_origin_change$bssid %in% bssid_unique,1,0) %>% as.factor
+total_data_origin_change$checked_wifi_type <- total_data_origin_change %>% with(ifelse(type ==1 ,1,
+                                                           ifelse(bssid %in% bssid_unique & type == 0 ,2,
+                                                                  ifelse(!bssid %in% bssid_unique & type == 1, 3, 4)))) %>% as.factor
+
+# order_bssid <- total_data_origin_change %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+# order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+# total_data_origin_change$bssid <- total_data_origin_change$bssid %>% ordered(levels = order_bssid$bssid)
+
+total_data_origin_change %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = checked_wifi_type)) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+### wifi bssid plot 3
+
+한 매장에서 처음 내부 수집된 와이파이 bssid들이 각 date에서 나온 rssi 결과값을 표시해놓았다.
+
+빨간색, 파란색이 구분되어 있는 plot은 전체에서 처음 내부 수집된 와이파이 bssid들을 구분해 놓은 것이다. 초록색 => 처음 내부 수집된 와이파이, 빨간색 => 내부 수집된 시점
+
+```{r}
+# first type==1 bssid
+bssid_index2 <- total_data_origin %>% subset(type==1) %>% .$index %>% unique %>% .[1]
+bssid_unique2 <- total_data_origin %>% subset(index==bssid_index2) %>% .$bssid
+
+order_bssid <- total_data_origin %>% subset(index==bssid_index2) %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_origin2 <-  total_data_origin %>% subset(bssid %in% bssid_unique2)
+total_data_origin2$bssid <- total_data_origin2$bssid %>% ordered(levels = order_bssid$bssid)
+
+total_data_origin2 %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+# total_data_origin$checked_wifi <- ifelse(total_data_origin$bssid %in% bssid_unique2,1,0) %>% as.factor
+total_data_origin$checked_wifi_type <- total_data_origin %>% with(ifelse(type ==1 ,1,
+                                                           ifelse(bssid %in% bssid_unique2 & type ==0 ,2,
+                                                                  ifelse(!bssid %in% bssid_unique2 & type ==1, 3, 4)))) %>% as.factor
+
+total_data_origin %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = checked_wifi_type)) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+##
+
+bssid_index2 <- total_data_origin_change %>% subset(type==1) %>% .$index %>% unique %>% .[1]
+bssid_unique2 <- total_data_origin_change %>% subset(index==bssid_index2) %>% .$bssid
+
+order_bssid <- total_data_origin_change %>% subset(index==bssid_index2) %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_origin_change2 <-  total_data_origin_change %>% subset(bssid %in% bssid_unique2)
+total_data_origin_change2$bssid <- total_data_origin_change2$bssid %>% ordered(levels = order_bssid$bssid)
+
+total_data_origin_change2 %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+# total_data_origin_change$checked_wifi <- ifelse(total_data_origin_change$bssid %in% bssid_unique2,1,0) %>% as.factor
+total_data_origin_change$checked_wifi_type <- total_data_origin_change %>% with(ifelse(type ==1 ,1,
+                                                           ifelse(bssid %in% bssid_unique2 & type == 0 ,2,
+                                                                  ifelse(!bssid %in% bssid_unique2 & type == 1, 3, 4)))) %>% as.factor
+
+total_data_origin_change %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = checked_wifi_type)) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+### wifi bssid plot 4
+
+한 매장에서 두번째 내부 수집된 와이파이 bssid들이 각 date에서 나온 rssi 결과값을 표시해놓았다.
+
+빨간색, 파란색이 구분되어 있는 plot은 전체에서 두번째 내부 수집된 와이파이 bssid들을 구분해 놓은 것이다. 초록색 => 두번째 내부 수집된 와이파이, 빨간색 => 내부 수집된 시점
+
+```{r}
+# second type==1 bssid
+bssid_index3 <- total_data_origin %>% subset(type==1) %>% .$index %>% unique %>% .[2]
+bssid_unique3 <- total_data_origin %>% subset(index==bssid_index3) %>% .$bssid
+
+order_bssid <- total_data_origin %>% subset(index==bssid_index3) %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_origin3 <-  total_data_origin %>% subset(bssid %in% bssid_unique3)
+total_data_origin3$bssid <- total_data_origin3$bssid %>% ordered(levels = order_bssid$bssid)
+
+
+total_data_origin3 %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+# total_data_origin$checked_wifi <- ifelse(total_data_origin$bssid %in% bssid_unique3,1,0) %>% as.factor
+total_data_origin$checked_wifi_type <- total_data_origin %>% with(ifelse(type ==1 ,1,
+                                                           ifelse(bssid %in% bssid_unique3 & type ==0 ,2,
+                                                                  ifelse(!bssid %in% bssid_unique3 & type ==1, 3, 4)))) %>% as.factor
+
+total_data_origin %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = checked_wifi_type)) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+##
+
+bssid_index3 <- total_data_origin_change %>% subset(type==1) %>% .$index %>% unique %>% .[2]
+bssid_unique3 <- total_data_origin_change %>% subset(index==bssid_index3) %>% .$bssid
+
+order_bssid <- total_data_origin_change %>% subset(index==bssid_index3) %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_origin_change3 <-  total_data_origin_change %>% subset(bssid %in% bssid_unique3)
+total_data_origin_change3$bssid <- total_data_origin_change3$bssid %>% ordered(levels = order_bssid$bssid)
+
+total_data_origin_change3 %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+# total_data_origin_change$checked_wifi <- ifelse(total_data_origin_change$bssid %in% bssid_unique3,1,0) %>% as.factor
+total_data_origin_change$checked_wifi_type <- total_data_origin_change %>% with(ifelse(type ==1 ,1,
+                                                           ifelse(bssid %in% bssid_unique3 & type == 0 ,2,
+                                                                  ifelse(!bssid %in% bssid_unique3 & type == 1, 3, 4)))) %>% as.factor
+
+total_data_origin_change %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = checked_wifi_type)) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+### wifi bssid plot 5
+
+한 매장에서 세번째 내부 수집된 와이파이 bssid들이 각 date에서 나온 rssi 결과값을 표시해놓았다.
+
+빨간색, 파란색이 구분되어 있는 plot은 전체에서 마지막 내부 수집된 와이파이 bssid들을 구분해 놓은 것이다. 초록색 => 마지막 내부 수집된 와이파이, 빨간색 => 내부 수집된 시점
+
+```{r}
+# third type==1 bssid
+bssid_index4 <- total_data_origin %>% subset(type==1) %>% .$index %>% unique %>% .[3]
+bssid_unique4 <- total_data_origin %>% subset(index==bssid_index4) %>% .$bssid
+
+order_bssid <- total_data_origin %>% subset(index==bssid_index4) %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_origin4 <-  total_data_origin %>% subset(bssid %in% bssid_unique4)
+total_data_origin4$bssid <- total_data_origin4$bssid %>% ordered(levels = order_bssid$bssid)
+
+total_data_origin4 %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+# total_data_origin$checked_wifi <- ifelse(total_data_origin$bssid %in% bssid_unique4,1,0) %>% as.factor
+total_data_origin$checked_wifi_type <- total_data_origin %>% with(ifelse(type ==1 ,1,
+                                                           ifelse(bssid %in% bssid_unique4 & type ==0 ,2,
+                                                                  ifelse(!bssid %in% bssid_unique4 & type ==1, 3, 4)))) %>% as.factor
+
+total_data_origin %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = checked_wifi_type)) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+##
+bssid_index4 <- total_data_origin_change %>% subset(type==1) %>% .$index %>% unique %>% .[3]
+bssid_unique4 <- total_data_origin_change %>% subset(index==bssid_index4) %>% .$bssid
+
+order_bssid <- total_data_origin_change %>% subset(index==bssid_index4) %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_origin_change4 <-  total_data_origin_change %>% subset(bssid %in% bssid_unique4)
+total_data_origin_change4$bssid <- total_data_origin_change4$bssid %>% ordered(levels = order_bssid$bssid)
+
+total_data_origin_change4 %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+# total_data_origin_change$checked_wifi <- ifelse(total_data_origin_change$bssid %in% bssid_unique4,1,0) %>% as.factor
+total_data_origin_change$checked_wifi_type <- total_data_origin_change %>% with(ifelse(type ==1 ,1,
+                                                           ifelse(bssid %in% bssid_unique4 & type == 0 ,2,
+                                                                  ifelse(!bssid %in% bssid_unique4 & type == 1, 3, 4)))) %>% as.factor
+
+total_data_origin_change %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = checked_wifi_type)) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+### wifi bssid plot 5
+
+한 매장에서 세번째 내부 수집된 와이파이 bssid들이 각 date에서 나온 rssi 결과값을 표시해놓았다.
+
+빨간색, 파란색이 구분되어 있는 plot은 전체에서 마지막 내부 수집된 와이파이 bssid들을 구분해 놓은 것이다. 초록색 => 마지막 내부 수집된 와이파이, 빨간색 => 내부 수집된 시점
+
+```{r}
+# third type==1 bssid
+bssid_index5 <- total_data_origin %>% subset(type==1) %>% .$index %>% unique %>% .[4]
+bssid_unique5 <- total_data_origin %>% subset(index==bssid_index5) %>% .$bssid
+
+order_bssid <- total_data_origin %>% subset(index==bssid_index5) %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_origin5 <-  total_data_origin %>% subset(bssid %in% bssid_unique5)
+total_data_origin5$bssid <- total_data_origin5$bssid %>% ordered(levels = order_bssid$bssid)
+
+total_data_origin5 %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+# total_data_origin$checked_wifi <- ifelse(total_data_origin$bssid %in% bssid_unique5,1,0) %>% as.factor
+total_data_origin$checked_wifi_type <- total_data_origin %>% with(ifelse(type ==1 ,1,
+                                                           ifelse(bssid %in% bssid_unique5 & type ==0 ,2,
+                                                                  ifelse(!bssid %in% bssid_unique5 & type ==1, 3, 5)))) %>% as.factor
+
+total_data_origin %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = checked_wifi_type)) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+##
+
+bssid_index5 <- total_data_origin_change %>% subset(type==1) %>% .$index %>% unique %>% .[4]
+bssid_unique5 <- total_data_origin_change %>% subset(index==bssid_index5) %>% .$bssid
+
+order_bssid <- total_data_origin_change %>% subset(index==bssid_index5) %>% group_by(bssid) %>% summarise(mean_rssi = mean(rssi))
+order_bssid <- order_bssid[order(order_bssid$mean_rssi,decreasing = TRUE),]
+
+total_data_origin_change5 <-  total_data_origin_change %>% subset(bssid %in% bssid_unique5)
+total_data_origin_change5$bssid <- total_data_origin_change5$bssid %>% ordered(levels = order_bssid$bssid)
+
+total_data_origin_change5 %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = as.numeric(rssi))) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+# total_data_origin_change$checked_wifi <- ifelse(total_data_origin_change$bssid %in% bssid_unique5,1,0) %>% as.factor
+total_data_origin_change$checked_wifi_type <- total_data_origin_change %>% with(ifelse(type ==1 ,1,
+                                                           ifelse(bssid %in% bssid_unique5 & type == 0 ,2,
+                                                                  ifelse(!bssid %in% bssid_unique5 & type == 1, 3, 5)))) %>% as.factor
+
+total_data_origin_change %>% ggplot(aes(x=bssid,y=date)) +
+  geom_tile(aes(fill = checked_wifi_type)) +
+  theme(legend.position = "none" ,
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+```

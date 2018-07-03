@@ -1,0 +1,54 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+
+```{r}
+# 패키지 로드
+library(needs)
+needs(knitr, tidyverse, data.table, lubridate, zoo, DescTools, lightgbm)
+```
+
+```{r}
+col_features <- c("app"                                ,"channel"          , 
+"click_id"                           ,"click_time"                        ,
+"device"                             ,"ip"                                ,
+"is_attributed"                      ,"os"                                ,
+"hour"                               ,"ip_app_device_os_channel_nextClick",
+"ip_os_device_nextClick"             ,"ip_os_device_app_nextClick"       , 
+"ip_channel_prevClick"               ,"ip_by_channel_countuniq"         ,  
+"ip_device_os_by_app_countuniq"      ,"ip_day_by_hour_countuniq"       ,   
+"ip_by_app_countuniq"                ,"ip_app_by_os_countuniq"        ,    
+"ip_by_device_countuniq"             ,"app_by_channel_countuniq"     ,     
+"ip_by_os_cumcount"                  ,"ip_device_os_by_app_cumcount",      
+"ip_day_hourcount"                   ,"ip_appcount"                ,       
+"ip_app_oscount"                     ,"ip_day_channel_by_hour_var")
+```
+
+```{r}
+train <- fread("/home/rjs/바탕화면/adtrack/data/train_df_all_2.csv",select=col_features) 
+test <- fread("/home/rjs/바탕화면/adtrack/data/test_df_18_2.csv",select=col_features)  
+```
+
+```{r}
+train$day <- substr(train$click_time,09,10) %>% as.numeric
+train$hour <- substr(train$click_time,12,13) %>% as.numeric
+# 6, 9 day remove
+train <- train %>% subset(!(day==6 & hour %in% c(14,15)))
+train <- train %>% subset(!(day==9 & hour == 16))
+train$hour <- train$hour + 8
+train$day <- ifelse(train$hour>=24, train$day + 1,train$day)
+train$hour <- train$hour %% 24
+
+test$day <- substr(test$click_time,09,10) %>% as.numeric
+test$hour <- substr(test$click_time,12,13) %>% as.numeric
+test$hour <- test$hour + 8
+
+rm(train_day,train_hour)
+```
+
+```{r}
+fwrite(train,"/home/rjs/바탕화면/adtrack/data/train_df.csv")
+fwrite(test,"/home/rjs/바탕화면/adtrack/data/test_df.csv")
+```

@@ -1,0 +1,63 @@
+---
+
+title: "Untitled"
+output: html_document
+---
+
+
+```{r}
+library(data.table)
+library(xgboost)
+library(caret)
+
+# Nos quedamos solo con las primeras 80000000 lineas de train.csv para no agotar la memoria
+# Descartamos las columnas "ip" (1), "click time" (6) y "attributed time" (7)
+trainData<-fread('/home/rjs/바탕화면/adtrack/data/train.csv',drop = c(1,6,7))
+
+# Balanceamos clases
+trainDataDwnSmpl<-downSample(trainData[,-5],as.factor(trainData$is_attributed))
+# Como mas abajo hacemos rbind de trainDataDwnSmpl y z vamos a almacenar
+# donde terminan los datos de trainig
+endOfTrainData<-dim(trainDataDwnSmpl)[1]
+
+# Descartamos las columnas "ip" (2) y "click time" (7)
+testData<-fread('/home/rjs/바탕화면/adtrack/data/test.csv',drop = c(2,7))
+# Todas las columnas de testData menos la primera ("click_id")
+z<-testData[,-1]
+
+# allData es para que no haya discrepancias en la variables binarias
+# de train y test cuando hacemos one hot encode
+allData<-rbind(trainDataDwnSmpl,z,fill =T)
+
+# one hot encode app
+apps<-as.factor(allData$app)
+apps_dummy<-Matrix::sparse.model.matrix(~0+apps)
+
+# one hot encode devices
+devices<-as.factor(allData$device)
+devices_dummy<-Matrix::sparse.model.matrix(~0+devices)
+
+# one hot encode oss
+oss<-as.factor(allData$os)
+oss_dummy<-Matrix::sparse.model.matrix(~0+oss)
+
+# one hot encode channels
+channels<-as.factor(allData$channel)
+channels_dummy<-Matrix::sparse.model.matrix(~0+channels)
+
+# Lo juntamos todo
+allData_dummified <- cbind(apps_dummy,devices_dummy,oss_dummy,channels_dummy)
+
+# Recuperamos el conjunto de training
+trainDataDwnSmpl<-xgb.DMatrix(data = allData_dummified[1:endOfTrainData,],label = as.integer(as.character(trainDataDwnSmpl$Class)))
+
+# Creamos el modelo
+model <- xgboost(trainDataDwnSmpl, nrounds = 500, objective = "binary:logistic",eval_metric="auc")
+
+# Prediccion
+res<-predict(model,allData_dummified[-(1:endOfTrainData),])
+
+submit<-cbind.data.frame(click_id=testData$click_id,is_attributed=round(res,digits = 3))
+write.csv(submit,"/home/rjs/바탕화면/adtrack/result/submit_04_abr_2.csv",quote = F,row.names = F)
+```
+
