@@ -1,0 +1,278 @@
+---
+title: "horse_race"
+author: "jiseungRyu"
+date: '2018 6 26 '
+output: html_document
+---
+## Load libraries and helper functions
+```{r, message = FALSE}
+# general visualisation
+library(needs)
+needs(dplyr,readr,h2o,corrplot)
+```
+
+```{r}
+setwd("/Users/jinseokryu/Desktop/ML강의자료/skt/4_20180626/")
+```
+
+```{r}
+df = read.csv("horse_race.csv", stringsAsFactors = FALSE)
+df
+# df$rcResult %>% table %>% prop.table
+# 0.7342036 0.2657964 
+```
+```{r}
+summary(df)
+```
+
+```{r}
+str(df)
+```
+```{r}
+library(stringr)
+head(df$trRcCntT)
+df$trRcCntT <- as.integer(str_replace(df$trRcCntT, ",", ""))
+table(df$weather)
+df$weather <- as.factor(df$weather)
+table(df$track)
+df$track <- as.factor(df$track)
+table(df$hrSex)
+df$hrSex <- as.factor(df$hrSex)
+table(df$rcType)
+df$rcType <- as.factor(df$rcType)
+table(df$rcClass)
+df$rcClass <- as.factor(df$rcClass)
+table(df$rcResult)
+df$rcResult <- factor(df$rcResult,levels=c("fail","pass"),labels=c(0,1))
+```
+```{r}
+summary(df)
+```
+
+
+```{r}
+str(df)
+```
+
+```{r}
+# Define multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+```{r}
+#numeric
+numeric_plot<-function(new_variable){
+p1 <- df %>%
+        ggplot(aes(x = rcResult,y=new_variable, color =  rcResult)) +geom_boxplot(alpha = 0.8)
+
+p2 <- df %>%
+          ggplot(aes(x = new_variable, color = rcResult, fill = rcResult)) +
+           geom_density(alpha = 0.8)
+
+p3 <- df %>%
+              ggplot(aes(x = new_variable, fill = rcResult, color =  rcResult)) +geom_bar(alpha = 0.8, position = "fill") +
+                coord_flip()
+
+layout <- matrix(c(1,3,2,3),2,2,byrow=TRUE)
+multiplot(p1, p2, p3, layout=layout)
+}
+```
+
+```{r}
+#facotr
+factor_plot<-function(new_variable){
+
+p1 <- df %>% 
+      ggplot(aes(x = rcResult, color = factor(new_variable), fill = factor(new_variable))) +
+        geom_bar(size=1, position = "dodge")
+
+p2 <- df %>% 
+      ggplot(aes(x = rcResult, color = factor(new_variable), fill = factor(new_variable))) +
+        geom_bar(size=1, position = "fill")
+
+p3 <- df %>% 
+        ggplot(aes(x = new_variable, color = factor(rcResult), fill = factor(rcResult))) +
+          geom_bar(size=1, position = "dodge")
+
+p4<-df %>% 
+          ggplot(aes(x = new_variable, color = factor(rcResult), fill = factor(rcResult))) +
+            geom_bar(size=1, position = "fill")
+
+layout <- matrix(1:4,2,2,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+}
+```
+
+```{r}
+library(GGally)
+library(ggplot2)
+library(grid)
+# ggpairs(df, aes(color = rcResult)) + theme_bw()
+```
+
+
+```{r}
+factor.idx <- colnames(df)[as.vector(sapply(df, is.factor))]
+numeric.idx <- c(colnames(df)[as.vector(sapply(df, is.factor))==FALSE],"rcResult")
+factor.table <- df[,factor.idx]
+numeric.table <- df[,numeric.idx]
+```
+
+
+```{r}
+for (i in 1:(length(factor.idx)-1)){
+  factor_plot(factor.table[,i])
+}
+```
+
+```{r}
+for (i in 1:(length(numeric.idx)-1)){
+  numeric_plot(numeric.table[,i])
+}
+```
+
+
+```{r}
+cor_matrix<-cor(df[,setdiff(numeric.idx,"rcResult")])
+corrplot(cor_matrix)
+```
+
+```{r}
+# plot보고 거른 변수
+predict.name <- c("rcType","track","chulNo","hrAge",'hrWeight','rcDist',
+                  "hrOrd2CntT","hrRcCntT","minimumTemperature","miTime",
+                  "hrRcCntY",'maxTime','dailyPrecipitation','meanWindspeed',
+                  "jkRcCntT","jkOrd1CntT","jkOrd2CntY",'trAge',"trOrd2CntY","rcResult")
+```
+
+```{r}
+cor_matrix<-cor(df[,setdiff(predict.name,c("rcResult","rcType","track"))])
+corrplot(cor_matrix)
+```
+
+```{r}
+model2 <- glm(rcResult ~ ., data = df[,predict.name],family = binomial(link="logit"))
+summary(model2)
+```
+```{r}
+library(car)
+vif(model2)
+predict.name <- setdiff(predict.name,"jkOrd1CntT")
+```
+
+```{r}
+model2 <- glm(rcResult ~ ., data = df[,predict.name],family = binomial(link="logit"))
+summary(model2)
+vif(model2)
+```
+```{r}
+backwards = step(model2)
+```
+
+```{r}
+formula(backwards)
+```
+```{r}
+summary(backwards)
+vif(backwards)
+# str(backwards)
+# colnames(backwards$model)
+glm.predictors <- setdiff(colnames(backwards$model),"rcResult")
+```
+
+## H2O 클러스터
+```{r}
+h2o.init(nthreads =- -1, max_mem_size = '8G')
+train_Hex<-as.h2o(df)
+```
+
+## Modeling
+```{r}
+predictors <- setdiff(names(df),
+                       c("rcResult"))
+response <- "rcResult"
+```
+
+## glm
+```{r}
+glm <- h2o.glm(x = glm.predictors,
+                      y = response,
+                      training_frame = train_Hex,
+                      family = "binomial",
+                      nfolds=10)
+```
+
+## rf
+```{r}
+rf <- h2o.randomForest(x = predictors,
+                      y = response,
+                      training_frame = train_Hex,
+                      ntree=200,
+                      nfolds=10)
+rf
+rf@model$variable_importances[1:20,]
+```
+
+## gbm
+```{r}
+gbm <- h2o.gbm(x = predictors,
+                      y = response,
+                      training_frame = train_Hex,
+                      nfolds=10,
+                      ntree=200)
+gbm
+gbm@model$variable_importances[1:20,]
+```
+
+## xgboost
+```{r}
+xgboost <- h2o.xgboost(x = predictors,
+                      y = response,
+                      training_frame = train_Hex,
+                      nfolds=10,
+                      ntree=200)
+xgboost
+xgboost@model$variable_importances[1:20,]
+```

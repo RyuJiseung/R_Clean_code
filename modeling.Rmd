@@ -1,0 +1,186 @@
+
+---
+title: 'Modeling - KKBox EDA'
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    number_sections: true
+    fig_caption: true
+    toc: true
+    fig_width: 7
+    fig_height: 4.5
+    theme: cosmo
+    highlight: tango
+    code_folding: hide
+---
+
+
+## Load libraries and helper functions
+```{r, message = FALSE}
+# general visualisation
+library(needs)
+needs(dplyr,readr,h2o)
+```
+
+
+## Load data
+```{r warning=FALSE, results=FALSE}
+train_df <- read_csv('~/Desktop/r스터디(목)/6_kaggle_competition/kaggle/train_df.csv')
+test_df <- read_csv('~/Desktop/r스터디(목)/6_kaggle_competition/kaggle/test_df.csv')
+setwd("~/Desktop/r스터디(목)/6_kaggle_competition/submission")
+```
+
+
+## Pretreatment
+```{r warning=FALSE, results=FALSE}
+train_df$fst_exp_date <- as.numeric(gsub("-","",train_df$fst_exp_date))
+train_df$lst_exp_date <- as.numeric(gsub("-","",train_df$lst_exp_date))
+train_df$gender <- ifelse(train_df$gender == "female" ,1, 0)
+
+test_df$fst_exp_date <- as.numeric(gsub("-","",test_df$fst_exp_date))
+test_df$lst_exp_date <- as.numeric(gsub("-","",test_df$lst_exp_date))
+test_df$gender <- ifelse(test_df$gender == "male" ,1, 0)
+
+
+train_df[is.na(train_df)] <- 0
+test_df[is.na(test_df)] <- 0
+```
+
+
+## 스케일링
+```{r}
+train_df$is_churn <- as.factor(train_df$is_churn)
+train_df$msno <- as.factor(train_df$msno)
+num <- train_df %>% keep(is.numeric)
+fac <- train_df %>% keep(is.factor)
+num <- as.data.frame(apply(num, 2, scale))
+
+train_df <- bind_cols(fac,num)
+
+test_df$is_churn <- as.factor(test_df$is_churn)
+test_df$msno <- as.factor(test_df$msno)
+num <- test_df %>% keep(is.numeric)
+fac <- test_df %>% keep(is.factor)
+num <- as.data.frame(apply(num, 2, scale))
+
+test_df <- bind_cols(fac,num)
+```
+
+
+## H2O 클러스터
+```{r}
+h2o.init(nthreads = -1, max_mem_size = '8G')
+train_df$is_churn<-as.factor(train_df$is_churn)
+train_Hex<-as.h2o(train_df)
+
+test_df$is_churn <- c(rep(1,(nrow(test_df)+1)/2),rep(0,(nrow(test_df)-1)/2))
+test_df$is_churn <- as.factor(test_df$is_churn)
+test_Hex<-as.h2o(test_df)
+```
+
+## Modeling
+```{r}
+predictors <- setdiff(names(train_df),
+                       c("is_churn", "msno"))
+response <- "is_churn"
+```
+
+
+## xgboost
+```{r}
+xgboost <- h2o.xgboost(x = predictors,
+                      y = response,
+                      training_frame = train_Hex,
+                      ntree=200,
+                      seed=950902)
+
+pred_xgboost <- h2o.predict(xgboost,test_Hex)
+
+
+test_df$xgboost <- as.vector(pred_xgboost$C3)
+
+temp <- test_df %>% select(msno,xgboost)
+colnames(temp) <- c("msno","is_churn")
+write.csv(temp,"xgboost_submission_seed.csv",row.names=FALSE)
+```
+
+
+## gbm
+```{r}
+gbm <- h2o.gbm(x = predictors,
+                      y = response,
+                      training_frame = train_Hex,
+                      ntree=200,
+                      seed=950902)
+
+pred_gbm <- h2o.predict(gbm,test_Hex)
+
+test_df$gbm <- as.vector(pred_gbm$p1)
+
+temp <- test_df %>% select(msno,gbm)
+colnames(temp) <- c("msno","is_churn")
+write.csv(temp,"gbm_submission_seed.csv",row.names=FALSE)
+```
+
+
+## rf
+```{r}
+rf <- h2o.randomForest(x = predictors,
+                      y = response,
+                      training_frame = train_Hex,
+                      ntree=200,
+                      seed=950902)
+
+
+pred_rf <- h2o.predict(rf,test_Hex)
+
+test_df$rf <- as.vector(pred_rf$p1)
+
+temp <- test_df %>% select(msno,rf)
+colnames(temp) <- c("msno","is_churn")
+write.csv(temp,"rf_submission_seed.csv",row.names=FALSE)
+```
+
+
+## glm
+```{r}
+glm <- h2o.glm(x = predictors,
+                      y = response,
+                      training_frame = train_Hex,
+                      family = "binomial",
+                      seed=950902)
+
+pred_glm <- h2o.predict(glm,test_Hex)
+
+test_df$glm <- as.vector(pred_glm$p1)
+
+temp <- test_df %>% select(msno,glm)
+colnames(temp) <- c("msno","is_churn")
+write.csv(temp,"glm_submission_seed.csv",row.names=FALSE)
+```
+
+
+## deeplearning
+```{r}
+deeplearning <- h2o.deeplearning(x = predictors,
+                      y = response,
+                      training_frame = train_Hex,
+                      seed=950902)
+
+pred_deeplearning <- h2o.predict(deeplearning,test_Hex)
+
+test_df$deeplearning <- as.vector(pred_deeplearning$p1)
+
+temp <- test_df %>% select(msno,deeplearning)
+colnames(temp) <- c("msno","is_churn")
+write.csv(temp,"deeplearning_submission_seed.csv",row.names=FALSE)
+```
+
+
+
+```{r}
+temp <- test_df %>% select(msno, xgboost, gbm, rf, glm, deeplearning)
+temp$is_churn <- temp %>% with((xgboost + gbm + rf + glm)/4)
+temp <- temp %>% select(msno, is_churn)
+write.csv(temp,"total_1_submission.csv",row.names=FALSE)
+```
